@@ -7,34 +7,24 @@ import websockets
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.websockets import WebSocketDisconnect
-
-from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Connect
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
-
 # ============================================================
-# CONFIGURACIÓN
+# CONFIGURATION
 # ============================================================
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PORT = int(os.getenv("PORT", 5050))
 TEMPERATURE = float(os.getenv("TEMPERATURE", 0.8))
 
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
-CALL_SECRET = os.getenv("CALL_SECRET")
-
 VOICE = "cedar"
 
-
 # ============================================================
-# IDIOMAS DISPONIBLES
+# LANGUAGES
 # ============================================================
 
 LANGUAGES = {
@@ -46,7 +36,7 @@ LANGUAGES = {
     "portuguese": "portugués",
     "japanese": "japonés",
     "mandarin": "mandarín",
-    "chinese": "mandarín",
+    "chinese": "chino",
     "korean": "coreano",
     "dutch": "neerlandés",
     "swedish": "sueco",
@@ -59,286 +49,178 @@ LANGUAGES = {
     "russian": "ruso",
 }
 
-
 # ============================================================
-# INSTRUCCIONES BASE DEL AGENTE
+# SYSTEM MESSAGE
 # ============================================================
 
-BASE_SYSTEM_MESSAGE = """
-Realizas llamadas comerciales profesionales en nombre de
-Fabián Guzmán Bravo, propietario y Director General de Guzi Stuff.
+SYSTEM_MESSAGE = """
+You are an advanced AI voice assistant for Guzi Stuff.
 
-Guzi Stuff es el nombre comercial del negocio de Fabián.
-No describas Guzi Stuff como una sociedad, empresa constituida
-o persona moral.
+You are speaking with people by telephone.
 
-El objetivo principal de la llamada es establecer contacto con
-el área comercial, ventas mayoristas, distribución o compras
-de marcas y proveedores.
+IMPORTANT LANGUAGE RULES:
+- Always speak in the language selected for this call.
+- If the selected language is Spanish, speak natural Mexican Spanish.
+- If the selected language is English, speak natural fluent English.
+- For any other selected language, speak naturally and fluently in that language.
+- Never switch languages unless the caller clearly asks you to.
+- Understand accents and imperfect pronunciation.
+- If the caller speaks another language, adapt naturally when appropriate.
 
-Tu objetivo es obtener, cuando sea posible:
+VOICE STYLE:
+- Sound natural, human, warm and professional.
+- Do not sound robotic.
+- Keep responses concise and conversational.
+- Use natural pauses.
+- Do not give long speeches.
+- Ask only one question at a time.
+- Do not repeat information unnecessarily.
+- Do not read a script mechanically.
+- Adapt your responses to what the person actually says.
+- If you do not understand something, politely ask the person to repeat it.
 
-- nombre de la persona responsable;
-- correo electrónico;
-- teléfono o extensión;
-- requisitos para abrir una cuenta comercial;
-- catálogo;
-- precios mayoristas;
-- mínimos de compra;
-- descuentos por volumen;
-- condiciones de pago;
-- disponibilidad;
-- políticas de distribución;
-- autorización o políticas para vender en marketplaces.
+BUSINESS STYLE:
+- You are calling on behalf of Guzi Stuff.
+- Guzi Stuff is an e-commerce business based in Mexico.
+- The purpose of calls may include establishing commercial relationships with suppliers, distributors, brands and companies.
+- Be professional, friendly and direct.
+- Do not invent prices, agreements, certifications, purchase volumes, legal entities or commercial conditions.
+- If you do not know something, say so and ask for the appropriate contact.
 
-Fabián comercializa principalmente mediante Amazon, Mercado Libre
-y Walmart, y está interesado en establecer relaciones comerciales
-directas con marcas y proveedores.
-
-Habla de manera natural, cordial, profesional y breve.
-
-No leas una lista de preguntas de manera mecánica.
-
-Haz una pregunta a la vez.
-
-Escucha cuidadosamente la respuesta antes de continuar.
-
-No interrumpas innecesariamente a la persona.
-
-Permite pausas naturales.
-
-No hagas monólogos largos.
-
-Adapta la conversación a lo que diga la persona.
-
-No inventes información.
-
-No proporciones el RFC de Fabián salvo que te lo soliciten
-expresamente como parte de un proceso formal de alta comercial.
-
-Si la persona responsable no está disponible, solicita amablemente
-su nombre, correo electrónico, teléfono o extensión para poder
-dar seguimiento.
-
-Si preguntan directamente si eres Fabián Guzmán Bravo, responde
-con transparencia que eres un asistente de voz que realiza la
-llamada en su nombre.
-
-No afirmes ser una persona humana.
-
-La finalidad de la llamada es conseguir el contacto adecuado y
-la información necesaria para continuar la relación comercial
-por correo electrónico.
+CALL BEHAVIOR:
+- Let the person finish speaking.
+- Do not interrupt unnecessarily.
+- Respond naturally to their answers.
+- Keep the conversation moving.
+- If the person gives you the name of another department or contact, acknowledge it and ask for the appropriate next step.
 """
 
+# ============================================================
+# GREETINGS
+# ============================================================
+
+GREETINGS = {
+    "spanish": (
+        "Hola, mucho gusto. Soy el asistente de voz de Guzi Stuff. "
+        "¿Con quién tengo el gusto?"
+    ),
+    "english": (
+        "Hello, nice to meet you. I'm the voice assistant calling on behalf "
+        "of Guzi Stuff. Who am I speaking with?"
+    ),
+    "french": (
+        "Bonjour, enchanté. Je suis l'assistant vocal de Guzi Stuff. "
+        "À qui ai-je le plaisir de parler ?"
+    ),
+    "german": (
+        "Hallo, schön, Sie kennenzulernen. Ich bin der Sprachassistent "
+        "von Guzi Stuff. Mit wem spreche ich bitte?"
+    ),
+    "italian": (
+        "Buongiorno, piacere di conoscerla. Sono l'assistente vocale "
+        "di Guzi Stuff. Con chi ho il piacere di parlare?"
+    ),
+    "portuguese": (
+        "Olá, muito prazer. Sou o assistente de voz da Guzi Stuff. "
+        "Com quem estou falando?"
+    ),
+    "japanese": (
+        "こんにちは。Guzi Stuffの音声アシスタントです。"
+        "どちら様でしょうか？"
+    ),
+    "mandarin": (
+        "您好，很高兴认识您。我是 Guzi Stuff 的语音助手。"
+        "请问您是哪位？"
+    ),
+    "chinese": (
+        "您好，很高兴认识您。我是 Guzi Stuff 的语音助手。"
+        "请问您是哪位？"
+    ),
+    "korean": (
+        "안녕하세요. Guzi Stuff의 음성 비서입니다. "
+        "실례하지만 성함이 어떻게 되시나요?"
+    ),
+    "dutch": (
+        "Hallo, aangenaam kennis te maken. Ik ben de spraakassistent "
+        "van Guzi Stuff. Met wie spreek ik?"
+    ),
+    "swedish": (
+        "Hej, trevligt att träffas. Jag är röstassistenten från Guzi Stuff. "
+        "Vem talar jag med?"
+    ),
+    "danish": (
+        "Hej, rart at møde dig. Jeg er stemmeassistenten fra Guzi Stuff. "
+        "Hvem taler jeg med?"
+    ),
+    "norwegian": (
+        "Hei, hyggelig å møte deg. Jeg er taleassistenten fra Guzi Stuff. "
+        "Hvem snakker jeg med?"
+    ),
+    "polish": (
+        "Dzień dobry, miło mi. Jestem asystentem głosowym Guzi Stuff. "
+        "Z kim mam przyjemność rozmawiać?"
+    ),
+    "turkish": (
+        "Merhaba, tanıştığımıza memnun oldum. Ben Guzi Stuff'ın sesli "
+        "asistanıyım. Kiminle görüşüyorum?"
+    ),
+    "arabic": (
+        "مرحباً، تشرفت بلقائك. أنا المساعد الصوتي لشركة Guzi Stuff. "
+        "مع من أتحدث؟"
+    ),
+    "hindi": (
+        "नमस्ते, आपसे मिलकर खुशी हुई। मैं Guzi Stuff का वॉइस असिस्टेंट हूँ। "
+        "मैं किससे बात कर रहा हूँ?"
+    ),
+    "russian": (
+        "Здравствуйте, очень приятно. Я голосовой ассистент Guzi Stuff. "
+        "С кем я разговариваю?"
+    ),
+}
 
 # ============================================================
-# VALIDACIONES
+# LOGGING
 # ============================================================
 
-if not OPENAI_API_KEY:
-    raise ValueError("Missing OPENAI_API_KEY")
+LOG_EVENT_TYPES = [
+    "error",
+    "response.content.done",
+    "rate_limits.updated",
+    "response.done",
+    "input_audio_buffer.committed",
+    "input_audio_buffer.speech_stopped",
+    "input_audio_buffer.speech_started",
+    "session.created",
+    "session.updated",
+]
 
-if not TWILIO_ACCOUNT_SID:
-    raise ValueError("Missing TWILIO_ACCOUNT_SID")
-
-if not TWILIO_AUTH_TOKEN:
-    raise ValueError("Missing TWILIO_AUTH_TOKEN")
-
-if not TWILIO_PHONE_NUMBER:
-    raise ValueError("Missing TWILIO_PHONE_NUMBER")
-
-if not CALL_SECRET:
-    raise ValueError("Missing CALL_SECRET")
-
-
-twilio_client = Client(
-    TWILIO_ACCOUNT_SID,
-    TWILIO_AUTH_TOKEN
-)
-
+SHOW_TIMING_MATH = False
 
 app = FastAPI()
 
-
-# ============================================================
-# CREAR INSTRUCCIONES SEGÚN IDIOMA
-# ============================================================
-
-def build_system_message(language_code: str) -> str:
-
-    language_code = (
-        language_code or "spanish"
-    ).lower().strip()
-
-    language_name = LANGUAGES.get(
-        language_code,
-        "español"
-    )
-
-    language_instructions = f"""
-
-IDIOMA DE ESTA LLAMADA
-
-El idioma objetivo de esta llamada es {language_name}.
-
-Desde el primer saludo debes hablar en {language_name}.
-
-Mantén toda la conversación en {language_name}.
-
-No cambies de idioma por nombres propios, marcas,
-palabras aisladas o acentos.
-
-Si la persona cambia claramente a otro idioma y continúa
-hablando en ese idioma, puedes adaptarte al nuevo idioma.
-
-Si existe duda sobre el idioma, conserva {language_name}.
-
-No traduzcas mentalmente la conversación para la persona.
-Responde directamente en el idioma correspondiente.
-
-La pronunciación debe ser clara y natural.
-
-"""
-
-    return BASE_SYSTEM_MESSAGE + language_instructions
+if not OPENAI_API_KEY:
+    raise ValueError("Missing the OpenAI API key.")
 
 
 # ============================================================
-# SALUDO INICIAL SEGÚN IDIOMA
-# ============================================================
-
-def get_initial_instruction(language_code: str) -> str:
-
-    language_code = (
-        language_code or "spanish"
-    ).lower().strip()
-
-    greetings = {
-
-        "spanish": (
-            "La llamada acaba de comenzar. "
-            "Saluda brevemente en español. "
-            "Di: 'Buenos días, ¿con quién tengo el gusto? "
-            "Mi nombre es Fabián Guzmán Bravo y le llamo de Guzi Stuff. "
-            "Estoy buscando establecer relaciones comerciales con marcas "
-            "y proveedores. ¿Me podría comunicar con la persona encargada "
-            "del área comercial o distribución?' "
-            "Después escucha y continúa la conversación naturalmente."
-        ),
-
-        "english": (
-            "The call has just started. "
-            "Greet the person briefly and naturally in English. "
-            "Introduce yourself as Fabián Guzmán Bravo calling from Guzi Stuff "
-            "and ask who you are speaking with and whether they can connect "
-            "you with the person responsible for commercial sales or distribution. "
-            "Then listen and continue the conversation naturally."
-        ),
-
-        "french": (
-            "L'appel vient de commencer. "
-            "Saluez brièvement et naturellement en français. "
-            "Présentez-vous comme Fabián Guzmán Bravo de Guzi Stuff "
-            "et demandez avec qui vous avez le plaisir de parler et "
-            "si cette personne peut vous mettre en relation avec le "
-            "responsable commercial ou de la distribution. "
-            "Écoutez ensuite et poursuivez naturellement."
-        ),
-
-        "german": (
-            "Das Gespräch hat gerade begonnen. "
-            "Begrüße die Person kurz und natürlich auf Deutsch. "
-            "Stelle dich als Fabián Guzmán Bravo von Guzi Stuff vor "
-            "und frage, mit wem du sprichst und ob die Person dich mit "
-            "dem zuständigen Ansprechpartner für Vertrieb oder Distribution "
-            "verbinden kann. Höre anschließend aufmerksam zu."
-        ),
-
-        "italian": (
-            "La chiamata è appena iniziata. "
-            "Saluta brevemente e naturalmente in italiano. "
-            "Presentati come Fabián Guzmán Bravo di Guzi Stuff "
-            "e chiedi con chi stai parlando e se può metterti in contatto "
-            "con la persona responsabile dell'area commerciale o della distribuzione. "
-            "Poi ascolta e continua naturalmente."
-        ),
-
-        "portuguese": (
-            "A chamada acabou de começar. "
-            "Cumprimente a pessoa de forma breve e natural em português. "
-            "Apresente-se como Fabián Guzmán Bravo da Guzi Stuff "
-            "e pergunte com quem está falando e se pode encaminhá-lo "
-            "para a pessoa responsável pela área comercial ou distribuição. "
-            "Depois escute e continue a conversa naturalmente."
-        ),
-
-        "japanese": (
-            "電話が始まったばかりです。 "
-            "日本語で簡潔かつ自然に挨拶してください。 "
-            "Guzi StuffのFabián Guzmán Bravoと名乗り、 "
-            "誰と話しているのか確認し、営業または流通担当者に "
-            "つないでもらえるか丁寧に尋ねてください。 "
-            "その後は相手の話をよく聞いて自然に会話を続けてください。"
-        ),
-
-        "mandarin": (
-            "电话刚刚接通。 "
-            "请用普通话自然、简洁地打招呼。 "
-            "介绍自己是Guzi Stuff的Fabián Guzmán Bravo， "
-            "询问对方怎么称呼，并礼貌地询问是否可以转接负责商业合作、 "
-            "销售或分销的人员。然后认真倾听并自然地继续对话。"
-        ),
-
-        "chinese": (
-            "电话刚刚接通。 "
-            "请用普通话自然、简洁地打招呼。 "
-            "介绍自己是Guzi Stuff的Fabián Guzmán Bravo， "
-            "询问对方怎么称呼，并礼貌地询问是否可以转接负责商业合作、 "
-            "销售或分销的人员。然后认真倾听并自然地继续对话。"
-        ),
-
-        "korean": (
-            "통화가 방금 연결되었습니다. "
-            "한국어로 자연스럽고 간단하게 인사하세요. "
-            "Guzi Stuff의 Fabián Guzmán Bravo라고 소개하고 "
-            "통화 상대방의 이름을 확인한 후 영업 또는 유통 담당자와 "
-            "연결할 수 있는지 정중하게 물어보세요. "
-            "그 후 상대방의 말을 듣고 자연스럽게 대화를 이어가세요."
-        ),
-    }
-
-    return greetings.get(
-        language_code,
-        greetings["english"]
-    )
-
-
-# ============================================================
-# PÁGINA PRINCIPAL
+# HOME
 # ============================================================
 
 @app.get("/", response_class=JSONResponse)
 async def index_page():
-
     return {
-        "message": "Guzi Stuff AI Voice Assistant is running.",
+        "message": "Guzi Stuff AI Voice Assistant is running!",
         "voice": VOICE,
-        "languages": list(LANGUAGES.keys())
+        "languages": list(LANGUAGES.keys()),
     }
 
 
 # ============================================================
-# LLAMADA ENTRANTE
+# INCOMING CALL
 # ============================================================
 
-@app.api_route(
-    "/incoming-call",
-    methods=["GET", "POST"]
-)
-async def handle_incoming_call(
-    request: Request
-):
+@app.api_route("/incoming-call", methods=["GET", "POST"])
+async def handle_incoming_call(request: Request):
 
     response = VoiceResponse()
 
@@ -346,8 +228,16 @@ async def handle_incoming_call(
 
     connect = Connect()
 
-    connect.stream(
-        url=f"wss://{host}/media-stream?language=spanish"
+    stream = connect.stream(
+        url=f"wss://{host}/media-stream"
+    )
+
+    # IMPORTANT:
+    # Twilio does not support query strings in <Stream>.
+    # Language is therefore passed as a custom parameter.
+    stream.parameter(
+        name="language",
+        value="spanish"
     )
 
     response.append(connect)
@@ -359,121 +249,118 @@ async def handle_incoming_call(
 
 
 # ============================================================
-# TWIML DE LLAMADA SALIENTE
+# OUTBOUND CALL
 # ============================================================
 
-@app.api_route(
-    "/outbound-call",
-    methods=["GET", "POST"]
-)
-async def outbound_call(
-    request: Request
-):
+@app.api_route("/make-call", methods=["GET", "POST"])
+async def make_call(request: Request):
 
-    language = (
-        request.query_params.get(
-            "language",
-            "spanish"
-        )
-        .lower()
-        .strip()
-    )
+    params = dict(request.query_params)
+
+    to_number = params.get("to")
+    language = params.get("language", "spanish").lower().strip()
 
     if language not in LANGUAGES:
-
         language = "spanish"
 
-    response = VoiceResponse()
+    if not to_number:
+        return JSONResponse(
+            {
+                "error": "Missing 'to' phone number."
+            },
+            status_code=400
+        )
+
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+    from_number = os.getenv("TWILIO_PHONE_NUMBER")
+
+    if not account_sid or not auth_token or not from_number:
+        return JSONResponse(
+            {
+                "error": "Missing Twilio environment variables."
+            },
+            status_code=500
+        )
+
+    from twilio.rest import Client
+
+    client = Client(
+        account_sid,
+        auth_token
+    )
 
     host = request.url.hostname
 
+    call = client.calls.create(
+        to=to_number,
+        from_=from_number,
+        url=f"https://{host}/outbound-call?language={language}",
+    )
+
+    print(
+        f"CALL CREATED | "
+        f"SID={call.sid} | "
+        f"TO={to_number} | "
+        f"LANGUAGE={language}"
+    )
+
+    return JSONResponse(
+        {
+            "status": "call_created",
+            "call_sid": call.sid,
+            "to": to_number,
+            "language": language,
+            "language_name": LANGUAGES[language],
+        }
+    )
+
+
+# ============================================================
+# OUTBOUND CALL TWIML
+# ============================================================
+
+@app.api_route("/outbound-call", methods=["GET", "POST"])
+async def handle_outbound_call(request: Request):
+
+    language = request.query_params.get(
+        "language",
+        "spanish"
+    ).lower().strip()
+
+    if language not in LANGUAGES:
+        language = "spanish"
+
+    host = request.url.hostname
+
+    response = VoiceResponse()
+
     connect = Connect()
 
-    connect.stream(
-        url=(
-            f"wss://{host}/media-stream"
-            f"?language={language}"
-        )
+    # IMPORTANT:
+    # DO NOT put ?language=... on the WebSocket URL.
+    # Twilio requires custom parameters instead.
+    stream = connect.stream(
+        url=f"wss://{host}/media-stream"
+    )
+
+    stream.parameter(
+        name="language",
+        value=language
     )
 
     response.append(connect)
+
+    print(
+        f"Outbound call TwiML | "
+        f"language={language} | "
+        f"language_name={LANGUAGES[language]}"
+    )
 
     return HTMLResponse(
         content=str(response),
         media_type="application/xml"
     )
-
-
-# ============================================================
-# INICIAR LLAMADA
-# ============================================================
-
-@app.get("/make-call")
-async def make_call(
-    request: Request,
-    to: str,
-    key: str,
-    language: str = "spanish"
-):
-
-    if key != CALL_SECRET:
-
-        return JSONResponse(
-            status_code=403,
-            content={
-                "error": "Invalid key"
-            }
-        )
-
-    language = (
-        language.lower().strip()
-    )
-
-    if language not in LANGUAGES:
-
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Unsupported language",
-                "available_languages": list(
-                    LANGUAGES.keys()
-                )
-            }
-        )
-
-    host = request.url.hostname
-
-    twiml_url = (
-        f"https://{host}"
-        f"/outbound-call"
-        f"?language={language}"
-    )
-
-    try:
-
-        call = twilio_client.calls.create(
-            to=to,
-            from_=TWILIO_PHONE_NUMBER,
-            url=twiml_url
-        )
-
-        return {
-            "status": "call_started",
-            "call_sid": call.sid,
-            "to": to,
-            "from": TWILIO_PHONE_NUMBER,
-            "language": language,
-            "language_name": LANGUAGES[language]
-        }
-
-    except Exception as e:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": str(e)
-            }
-        )
 
 
 # ============================================================
@@ -481,342 +368,434 @@ async def make_call(
 # ============================================================
 
 @app.websocket("/media-stream")
-async def handle_media_stream(
-    websocket: WebSocket
-):
+async def handle_media_stream(websocket: WebSocket):
 
-    print("Client connected")
+    print("Twilio WebSocket connecting...")
 
     await websocket.accept()
 
-    language = (
-        websocket.query_params.get(
-            "language",
-            "spanish"
+    print("Twilio WebSocket accepted.")
+
+    # ========================================================
+    # FIRST: RECEIVE TWILIO START MESSAGE
+    # ========================================================
+
+    stream_sid = None
+    language = "spanish"
+
+    try:
+
+        first_message = await websocket.receive_text()
+
+        first_data = json.loads(first_message)
+
+        print(
+            f"First Twilio event: "
+            f"{first_data.get('event')}"
         )
-        .lower()
-        .strip()
-    )
 
-    if language not in LANGUAGES:
+        # Twilio normally sends:
+        # connected
+        # start
+        # media
+        #
+        # We need the start message before connecting
+        # to OpenAI because the language lives there.
 
-        language = "spanish"
+        if first_data.get("event") == "connected":
 
-    print(
-        f"Call language: {language}"
-    )
+            start_message = await websocket.receive_text()
 
-    system_message = build_system_message(
-        language
-    )
+            start_data = json.loads(start_message)
 
-    async with websockets.connect(
-        "wss://api.openai.com/v1/realtime"
-        "?model=gpt-realtime",
-        additional_headers={
-            "Authorization": (
-                f"Bearer {OPENAI_API_KEY}"
+        else:
+
+            start_data = first_data
+
+        if start_data.get("event") == "start":
+
+            stream_sid = start_data["start"]["streamSid"]
+
+            custom_parameters = (
+                start_data["start"]
+                .get("customParameters", {})
             )
-        }
-    ) as openai_ws:
 
-        await initialize_session(
-            openai_ws,
-            system_message
+            language = (
+                custom_parameters
+                .get("language", "spanish")
+                .lower()
+                .strip()
+            )
+
+            if language not in LANGUAGES:
+                language = "spanish"
+
+            print(
+                f"CALL LANGUAGE: {language} "
+                f"({LANGUAGES[language]})"
+            )
+
+            print(
+                f"Stream SID: {stream_sid}"
+            )
+
+            print(
+                f"Custom parameters: "
+                f"{custom_parameters}"
+            )
+
+        else:
+
+            print(
+                "WARNING: Did not receive Twilio start event."
+            )
+
+    except Exception as e:
+
+        print(
+            f"Error reading initial Twilio messages: {e}"
         )
 
-        stream_sid = None
-        latest_media_timestamp = 0
-        last_assistant_item = None
+        return
 
-        mark_queue = []
+    # ========================================================
+    # CONNECT TO OPENAI
+    # ========================================================
 
-        response_start_timestamp_twilio = None
+    openai_url = (
+        "wss://api.openai.com/v1/realtime"
+        "?model=gpt-realtime"
+        f"&temperature={TEMPERATURE}"
+    )
 
+    try:
 
-        # ====================================================
-        # TWILIO -> OPENAI
-        # ====================================================
+        async with websockets.connect(
+            openai_url,
+            additional_headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}"
+            }
+        ) as openai_ws:
 
-        async def receive_from_twilio():
+            print(
+                f"OpenAI connected. "
+                f"Language={language}"
+            )
 
-            nonlocal stream_sid
-            nonlocal latest_media_timestamp
+            await initialize_session(
+                openai_ws,
+                language
+            )
 
-            try:
+            # ====================================================
+            # CONNECTION STATE
+            # ====================================================
 
-                async for message in websocket.iter_text():
+            latest_media_timestamp = 0
+            last_assistant_item = None
+            mark_queue = []
+            response_start_timestamp_twilio = None
 
-                    data = json.loads(message)
+            # ====================================================
+            # RECEIVE FROM TWILIO
+            # ====================================================
 
-                    if data["event"] == "media":
+            async def receive_from_twilio():
 
-                        latest_media_timestamp = int(
-                            data["media"]["timestamp"]
-                        )
+                nonlocal latest_media_timestamp
+                nonlocal stream_sid
+                nonlocal response_start_timestamp_twilio
+                nonlocal last_assistant_item
 
-                        audio_append = {
-                            "type": (
-                                "input_audio_buffer.append"
-                            ),
-                            "audio": data["media"]["payload"]
-                        }
+                try:
 
-                        await openai_ws.send(
-                            json.dumps(
-                                audio_append
+                    async for message in websocket.iter_text():
+
+                        data = json.loads(message)
+
+                        event_type = data.get("event")
+
+                        # ----------------------------------------
+                        # AUDIO FROM CALLER
+                        # ----------------------------------------
+
+                        if event_type == "media":
+
+                            latest_media_timestamp = int(
+                                data["media"]["timestamp"]
                             )
-                        )
 
-                    elif data["event"] == "start":
+                            audio_append = {
+                                "type":
+                                    "input_audio_buffer.append",
+                                "audio":
+                                    data["media"]["payload"]
+                            }
 
-                        stream_sid = (
-                            data["start"]["streamSid"]
-                        )
+                            await openai_ws.send(
+                                json.dumps(audio_append)
+                            )
 
-                        print(
-                            "Incoming stream started:",
-                            stream_sid
-                        )
+                        # ----------------------------------------
+                        # START
+                        # ----------------------------------------
 
-                        latest_media_timestamp = 0
+                        elif event_type == "start":
 
-                        mark_queue.clear()
+                            stream_sid = (
+                                data["start"]["streamSid"]
+                            )
 
-            except WebSocketDisconnect:
+                            print(
+                                f"Stream started: "
+                                f"{stream_sid}"
+                            )
 
-                print(
-                    "Client disconnected."
-                )
+                            response_start_timestamp_twilio = None
+                            latest_media_timestamp = 0
+                            last_assistant_item = None
 
-                if not openai_ws.closed:
+                        # ----------------------------------------
+                        # MARK
+                        # ----------------------------------------
 
-                    await openai_ws.close()
+                        elif event_type == "mark":
 
+                            if mark_queue:
+                                mark_queue.pop(0)
 
-        # ====================================================
-        # OPENAI -> TWILIO
-        # ====================================================
+                        # ----------------------------------------
+                        # STOP
+                        # ----------------------------------------
 
-        async def send_to_twilio():
+                        elif event_type == "stop":
 
-            nonlocal stream_sid
-            nonlocal last_assistant_item
-            nonlocal response_start_timestamp_twilio
+                            print(
+                                "Twilio stream stopped."
+                            )
 
-            try:
+                            break
 
-                async for openai_message in openai_ws:
+                except WebSocketDisconnect:
 
-                    response = json.loads(
-                        openai_message
+                    print(
+                        "Twilio client disconnected."
                     )
 
-                    event_type = response.get(
-                        "type"
-                    )
+                    try:
+                        await openai_ws.close()
+                    except Exception:
+                        pass
 
-                    if event_type in [
-                        "error",
-                        "response.done",
-                        "session.created",
-                        "session.updated",
-                        "input_audio_buffer.speech_started",
-                        "input_audio_buffer.speech_stopped",
-                    ]:
+            # ====================================================
+            # SEND TO TWILIO
+            # ====================================================
 
-                        print(
-                            f"OpenAI event: {event_type}"
+            async def send_to_twilio():
+
+                nonlocal stream_sid
+                nonlocal last_assistant_item
+                nonlocal response_start_timestamp_twilio
+
+                try:
+
+                    async for openai_message in openai_ws:
+
+                        response = json.loads(
+                            openai_message
                         )
 
-                    # ----------------------------------------
-                    # AUDIO DE OPENAI
-                    # ----------------------------------------
+                        response_type = response.get(
+                            "type"
+                        )
 
-                    if (
-                        event_type
-                        == "response.output_audio.delta"
-                        and response.get("delta")
-                    ):
+                        if response_type in LOG_EVENT_TYPES:
 
-                        audio_payload = (
-                            base64.b64encode(
+                            print(
+                                f"OpenAI event: "
+                                f"{response_type}"
+                            )
+
+                        # ----------------------------------------
+                        # AUDIO RESPONSE
+                        # ----------------------------------------
+
+                        if (
+                            response_type
+                            == "response.output_audio.delta"
+                            and "delta" in response
+                        ):
+
+                            audio_payload = base64.b64encode(
                                 base64.b64decode(
                                     response["delta"]
                                 )
-                            )
-                            .decode("utf-8")
-                        )
+                            ).decode("utf-8")
 
-                        audio_delta = {
-
-                            "event": "media",
-
-                            "streamSid": stream_sid,
-
-                            "media": {
-                                "payload": audio_payload
+                            audio_delta = {
+                                "event": "media",
+                                "streamSid": stream_sid,
+                                "media": {
+                                    "payload":
+                                        audio_payload
+                                }
                             }
-                        }
 
-                        await websocket.send_json(
-                            audio_delta
-                        )
+                            await websocket.send_json(
+                                audio_delta
+                            )
 
-                    # ----------------------------------------
-                    # NUEVA RESPUESTA
-                    # ----------------------------------------
+                            if (
+                                response.get("item_id")
+                                and response["item_id"]
+                                != last_assistant_item
+                            ):
 
-                    if (
-                        response.get("item_id")
-                        and response["item_id"]
-                        != last_assistant_item
-                    ):
+                                response_start_timestamp_twilio = (
+                                    latest_media_timestamp
+                                )
 
-                        response_start_timestamp_twilio = (
-                            latest_media_timestamp
-                        )
+                                last_assistant_item = (
+                                    response["item_id"]
+                                )
 
-                        last_assistant_item = (
-                            response["item_id"]
-                        )
+                            await send_mark(
+                                websocket,
+                                stream_sid,
+                                mark_queue
+                            )
 
-                        await send_mark(
-                            websocket,
-                            stream_sid
-                        )
+                        # ----------------------------------------
+                        # CALLER STARTED SPEAKING
+                        # ----------------------------------------
 
-                    # ----------------------------------------
-                    # INTERRUPCIÓN
-                    # ----------------------------------------
+                        if (
+                            response_type
+                            == "input_audio_buffer.speech_started"
+                        ):
 
-                    if (
-                        event_type
-                        == "input_audio_buffer.speech_started"
-                    ):
+                            print(
+                                "Caller started speaking."
+                            )
 
-                        if last_assistant_item:
+                            if last_assistant_item:
 
-                            await handle_speech_started_event()
+                                await handle_speech_started_event()
 
+                except Exception as e:
 
-            except Exception as e:
+                    print(
+                        f"Error in send_to_twilio: {e}"
+                    )
+
+            # ====================================================
+            # INTERRUPTION HANDLER
+            # ====================================================
+
+            async def handle_speech_started_event():
+
+                nonlocal response_start_timestamp_twilio
+                nonlocal last_assistant_item
 
                 print(
-                    f"Error in send_to_twilio: {e}"
+                    "Handling speech interruption."
                 )
 
+                if (
+                    mark_queue
+                    and response_start_timestamp_twilio
+                    is not None
+                ):
 
-        # ====================================================
-        # MANEJAR INTERRUPCIÓN
-        # ====================================================
+                    elapsed_time = (
+                        latest_media_timestamp
+                        - response_start_timestamp_twilio
+                    )
 
-        async def handle_speech_started_event():
+                    if SHOW_TIMING_MATH:
 
-            nonlocal response_start_timestamp_twilio
-            nonlocal last_assistant_item
-
-            if (
-                mark_queue
-                and response_start_timestamp_twilio
-                is not None
-            ):
-
-                elapsed_time = (
-                    latest_media_timestamp
-                    - response_start_timestamp_twilio
-                )
-
-                if last_assistant_item:
-
-                    truncate_event = {
-
-                        "type": (
-                            "conversation.item.truncate"
-                        ),
-
-                        "item_id": (
-                            last_assistant_item
-                        ),
-
-                        "content_index": 0,
-
-                        "audio_end_ms": elapsed_time
-                    }
-
-                    await openai_ws.send(
-                        json.dumps(
-                            truncate_event
+                        print(
+                            "Elapsed time: "
+                            f"{elapsed_time}ms"
                         )
-                    )
 
-                    await websocket.send_json(
-                        {
-                            "event": "clear",
-                            "streamSid": stream_sid
+                    if last_assistant_item:
+
+                        truncate_event = {
+                            "type":
+                                "conversation.item.truncate",
+                            "item_id":
+                                last_assistant_item,
+                            "content_index": 0,
+                            "audio_end_ms":
+                                elapsed_time
                         }
-                    )
 
-                    mark_queue.clear()
+                        await openai_ws.send(
+                            json.dumps(truncate_event)
+                        )
 
-                    last_assistant_item = None
+                        await websocket.send_json(
+                            {
+                                "event": "clear",
+                                "streamSid":
+                                    stream_sid
+                            }
+                        )
 
-                    response_start_timestamp_twilio = None
+                        mark_queue.clear()
 
+                        last_assistant_item = None
+                        response_start_timestamp_twilio = None
 
-        # ====================================================
-        # MARK
-        # ====================================================
+            # ====================================================
+            # RUN BOTH DIRECTIONS
+            # ====================================================
 
-        async def send_mark(
-            connection,
-            stream_sid
-        ):
+            await asyncio.gather(
+                receive_from_twilio(),
+                send_to_twilio()
+            )
 
-            if stream_sid:
+    except Exception as e:
 
-                mark_event = {
-
-                    "event": "mark",
-
-                    "streamSid": stream_sid,
-
-                    "mark": {
-                        "name": "responsePart"
-                    }
-                }
-
-                await connection.send_json(
-                    mark_event
-                )
-
-                mark_queue.append(
-                    "responsePart"
-                )
-
-
-        # ====================================================
-        # PRIMER MENSAJE
-        # ====================================================
-
-        await send_initial_conversation_item(
-            openai_ws,
-            language
-        )
-
-
-        # ====================================================
-        # EJECUTAR AMBAS DIRECCIONES
-        # ====================================================
-
-        await asyncio.gather(
-            receive_from_twilio(),
-            send_to_twilio()
+        print(
+            f"OpenAI/Twilio connection error: {e}"
         )
 
 
 # ============================================================
-# HACER QUE OPENAI HABLE PRIMERO
+# SEND MARK
+# ============================================================
+
+async def send_mark(
+    connection,
+    stream_sid,
+    mark_queue
+):
+
+    if stream_sid:
+
+        mark_event = {
+            "event": "mark",
+            "streamSid": stream_sid,
+            "mark": {
+                "name": "responsePart"
+            }
+        }
+
+        await connection.send_json(
+            mark_event
+        )
+
+        mark_queue.append(
+            "responsePart"
+        )
+
+
+# ============================================================
+# INITIAL GREETING
 # ============================================================
 
 async def send_initial_conversation_item(
@@ -824,29 +803,40 @@ async def send_initial_conversation_item(
     language
 ):
 
-    initial_instruction = (
-        get_initial_instruction(
-            language
-        )
+    greeting = GREETINGS.get(
+        language,
+        GREETINGS["spanish"]
     )
 
     initial_conversation_item = {
 
-        "type": "conversation.item.create",
+        "type":
+            "conversation.item.create",
 
         "item": {
 
-            "type": "message",
+            "type":
+                "message",
 
-            "role": "user",
+            "role":
+                "user",
 
             "content": [
 
                 {
-                    "type": "input_text",
+                    "type":
+                        "input_text",
 
-                    "text": initial_instruction
+                    "text":
+                        (
+                            "Start the call naturally. "
+                            "Speak in the selected language. "
+                            "Say exactly this greeting, "
+                            "with natural conversational delivery: "
+                            f"{greeting}"
+                        )
                 }
+
             ]
         }
     }
@@ -867,27 +857,48 @@ async def send_initial_conversation_item(
 
 
 # ============================================================
-# CONFIGURAR SESIÓN OPENAI
+# OPENAI SESSION
 # ============================================================
 
 async def initialize_session(
     openai_ws,
-    system_message
+    language
 ):
+
+    language_name = LANGUAGES.get(
+        language,
+        "español"
+    )
+
+    language_instructions = f"""
+
+IMPORTANT:
+The selected language for this call is:
+{language_name}
+
+The caller must hear you speaking in:
+{language_name}
+
+Do not default to Spanish unless Spanish is the selected language.
+
+Speak naturally and conversationally in the selected language.
+"""
 
     session_update = {
 
-        "type": "session.update",
+        "type":
+            "session.update",
 
         "session": {
 
-            "type": "realtime",
+            "type":
+                "realtime",
 
-            "model": "gpt-realtime",
+            "model":
+                "gpt-realtime",
 
-            "output_modalities": [
-                "audio"
-            ],
+            "output_modalities":
+                ["audio"],
 
             "audio": {
 
@@ -908,16 +919,20 @@ async def initialize_session(
                         "type": "audio/pcmu"
                     },
 
-                    "voice": VOICE
+                    "voice":
+                        VOICE
                 }
             },
 
-            "instructions": system_message
+            "instructions":
+                SYSTEM_MESSAGE
+                + language_instructions
         }
     }
 
     print(
-        "Sending session update"
+        f"Initializing OpenAI session "
+        f"with language={language}"
     )
 
     await openai_ws.send(
@@ -926,9 +941,15 @@ async def initialize_session(
         )
     )
 
+    # AI speaks first
+    await send_initial_conversation_item(
+        openai_ws,
+        language
+    )
+
 
 # ============================================================
-# ARRANQUE
+# START SERVER
 # ============================================================
 
 if __name__ == "__main__":
