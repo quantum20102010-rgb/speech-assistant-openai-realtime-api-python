@@ -18,49 +18,55 @@ load_dotenv()
 
 
 # ============================================================
-# CONFIGURATION
+# CONFIGURACIÓN
 # ============================================================
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PORT = int(os.getenv("PORT", 5050))
 TEMPERATURE = float(os.getenv("TEMPERATURE", 0.8))
 
-# Twilio credentials - these will be stored ONLY in Railway
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
-
-# Private secret used to authorize outbound-call requests
 CALL_SECRET = os.getenv("CALL_SECRET")
 
 
+# ============================================================
+# PERSONALIDAD Y OBJETIVO DEL AGENTE
+# ============================================================
+
 SYSTEM_MESSAGE = (
-    "Hablas en español de México y realizas llamadas comerciales en nombre de "
-    "Fabián Guzmán Bravo, propietario y Director General de Guzi Stuff. "
-    "Guzi Stuff es el nombre comercial del negocio de Fabián; no lo describas como "
-    "una sociedad o persona moral. "
+    "Hablas en español de México, con una voz cálida, profesional, natural "
+    "y conversacional. Tu forma de hablar debe sonar como una persona mexicana "
+    "en una llamada comercial, sin sonar robótica, exagerada ni demasiado formal. "
 
-    "Tu objetivo principal es establecer contacto con el área comercial, ventas "
-    "mayoristas o distribución de proveedores y marcas en México. "
+    "Realizas llamadas comerciales en nombre de Fabián Guzmán Bravo, "
+    "propietario y Director General de Guzi Stuff. "
+    "Guzi Stuff es el nombre comercial del negocio de Fabián; "
+    "no lo describas como una sociedad o persona moral. "
 
-    "Al iniciar una llamada, di de forma natural: "
-    "'Buenos días. Mi nombre es Fabián Guzmán Bravo y le llamo de Guzi Stuff. "
-    "Estoy interesado en establecer una relación comercial con ustedes para la "
-    "distribución de sus productos en México, principalmente a través de Amazon "
-    "México, Mercado Libre y Walmart. Quisiera saber con quién puedo comunicarme "
-    "del área comercial o de distribución.' "
+    "El objetivo de la llamada es establecer contacto con el área comercial, "
+    "ventas mayoristas o distribución de marcas y proveedores en México. "
 
-    "Si preguntan qué es Guzi Stuff, explica: "
-    "'Guzi Stuff es mi negocio de comercialización y distribución de productos "
-    "en marketplaces en México. Actualmente estoy buscando incorporar nuevas "
-    "marcas y proveedores con los que pueda trabajar directamente.' "
+    "Al comenzar la llamada, preséntate de manera breve y natural. "
+    "Puedes decir algo como: "
+    "'Buenos días, ¿con quién tengo el gusto? Mi nombre es Fabián Guzmán Bravo "
+    "y le llamo de Guzi Stuff. Estoy buscando establecer relaciones comerciales "
+    "con marcas y proveedores en México. ¿Me podría comunicar con la persona "
+    "encargada del área comercial o distribución?' "
 
-    "Tu objetivo es obtener, cuando sea posible, la siguiente información: "
-    "nombre de la persona responsable, correo electrónico, teléfono o extensión, "
-    "requisitos para abrir una cuenta comercial, catálogo, precios mayoristas, "
-    "mínimos de compra, descuentos por volumen, condiciones de pago, disponibilidad "
-    "de productos y políticas o autorizaciones para vender en Amazon México, "
-    "Mercado Libre y Walmart México. "
+    "Después del saludo, escucha a la persona y responde de acuerdo con lo que diga. "
+    "No hagas un monólogo ni leas una lista de preguntas. "
+
+    "Si preguntan qué es Guzi Stuff, explica que es un negocio de comercialización "
+    "y distribución de productos en marketplaces en México, principalmente "
+    "Amazon México, Mercado Libre y Walmart México. "
+
+    "El objetivo principal es obtener, cuando sea posible, el nombre de la persona "
+    "responsable, correo electrónico, teléfono o extensión, requisitos para abrir "
+    "una cuenta comercial, catálogo, precios mayoristas, mínimos de compra, "
+    "descuentos por volumen, condiciones de pago, disponibilidad y políticas "
+    "o autorizaciones para vender en Amazon México, Mercado Libre y Walmart México. "
 
     "Si la persona responsable no está disponible, solicita amablemente su nombre, "
     "correo electrónico, teléfono o extensión para poder darle seguimiento. "
@@ -68,20 +74,18 @@ SYSTEM_MESSAGE = (
     "No inventes información. No proporciones el RFC de Fabián salvo que te lo "
     "soliciten expresamente como parte de un proceso formal de alta comercial. "
 
-    "Habla de manera profesional, cordial, breve y natural. No leas una lista "
-    "de preguntas de manera mecánica; adapta la conversación a las respuestas "
-    "de la persona. No hagas afirmaciones que no conozcas. "
+    "Sé breve. Deja que la otra persona hable. Haz una pregunta a la vez. "
+    "Mantén un tono cordial y profesional. "
 
     "Si te preguntan directamente si eres Fabián Guzmán Bravo, responde con "
-    "transparencia que eres un asistente de voz que realiza la llamada en su "
-    "nombre. No afirmes ser una persona humana. "
-
-    "La finalidad de la llamada es conseguir el contacto adecuado y la información "
-    "necesaria para continuar la relación comercial por correo electrónico. "
+    "transparencia que eres un asistente de voz que realiza la llamada en su nombre. "
+    "No afirmes ser una persona humana."
 )
 
 
-VOICE = "alloy"
+# Voz de OpenAI
+VOICE = "marin"
+
 
 LOG_EVENT_TYPES = [
     "error",
@@ -95,6 +99,7 @@ LOG_EVENT_TYPES = [
     "session.updated",
 ]
 
+
 SHOW_TIMING_MATH = False
 
 
@@ -102,36 +107,25 @@ app = FastAPI()
 
 
 # ============================================================
-# BASIC VALIDATION
+# VALIDACIONES
 # ============================================================
 
 if not OPENAI_API_KEY:
-    raise ValueError(
-        "Missing the OpenAI API key. Please set OPENAI_API_KEY."
-    )
+    raise ValueError("Missing OPENAI_API_KEY")
 
 if not TWILIO_ACCOUNT_SID:
-    raise ValueError(
-        "Missing TWILIO_ACCOUNT_SID."
-    )
+    raise ValueError("Missing TWILIO_ACCOUNT_SID")
 
 if not TWILIO_AUTH_TOKEN:
-    raise ValueError(
-        "Missing TWILIO_AUTH_TOKEN."
-    )
+    raise ValueError("Missing TWILIO_AUTH_TOKEN")
 
 if not TWILIO_PHONE_NUMBER:
-    raise ValueError(
-        "Missing TWILIO_PHONE_NUMBER."
-    )
+    raise ValueError("Missing TWILIO_PHONE_NUMBER")
 
 if not CALL_SECRET:
-    raise ValueError(
-        "Missing CALL_SECRET."
-    )
+    raise ValueError("Missing CALL_SECRET")
 
 
-# Twilio REST client
 twilio_client = Client(
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN
@@ -139,7 +133,7 @@ twilio_client = Client(
 
 
 # ============================================================
-# HOME
+# PÁGINA PRINCIPAL
 # ============================================================
 
 @app.get("/", response_class=JSONResponse)
@@ -150,29 +144,13 @@ async def index_page():
 
 
 # ============================================================
-# INCOMING CALL
+# LLAMADAS ENTRANTES
 # ============================================================
 
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def handle_incoming_call(request: Request):
-    """
-    Handle an incoming call and connect it to the OpenAI Realtime API.
-    """
 
     response = VoiceResponse()
-
-    response.say(
-        "Espere un momento mientras conecto su llamada con el asistente "
-        "de voz de Guzi Stuff.",
-        voice="Google.en-US-Chirp3-HD-Aoede"
-    )
-
-    response.pause(length=1)
-
-    response.say(
-        "Ya puede comenzar a hablar.",
-        voice="Google.en-US-Chirp3-HD-Aoede"
-    )
 
     host = request.url.hostname
 
@@ -191,25 +169,13 @@ async def handle_incoming_call(request: Request):
 
 
 # ============================================================
-# OUTBOUND CALL - TWIML
+# TWIML PARA LLAMADA SALIENTE
 # ============================================================
 
 @app.api_route("/outbound-call", methods=["GET", "POST"])
-async def handle_outbound_call(request: Request):
-    """
-    TwiML returned to Twilio after an outbound call is answered.
-    """
+async def outbound_call(request: Request):
 
     response = VoiceResponse()
-
-    response.say(
-        "Buenos días. Mi nombre es Fabián Guzmán Bravo y le llamo "
-        "de Guzi Stuff. Estoy interesado en establecer una relación "
-        "comercial con ustedes.",
-        voice="Google.en-US-Chirp3-HD-Aoede"
-    )
-
-    response.pause(length=1)
 
     host = request.url.hostname
 
@@ -228,62 +194,44 @@ async def handle_outbound_call(request: Request):
 
 
 # ============================================================
-# START OUTBOUND CALL
+# INICIAR LLAMADA SALIENTE
 # ============================================================
 
-@app.get("/make-call", response_class=JSONResponse)
-async def make_outbound_call(
+@app.get("/make-call")
+async def make_call(
     request: Request,
     to: str,
     key: str
 ):
-    """
-    Start an outbound phone call.
 
-    Example:
-    /make-call?to=%2B525574986500&key=YOUR_SECRET
-    """
-
-    # Security check
     if key != CALL_SECRET:
         return JSONResponse(
             status_code=403,
-            content={
-                "error": "Unauthorized"
-            }
-        )
-
-    # Basic phone number validation
-    if not to.startswith("+"):
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Phone number must use E.164 format, e.g. +525574986500"
-            }
+            content={"error": "Invalid key"}
         )
 
     host = request.url.hostname
 
-    twiml_url = f"https://{host}/outbound-call"
+    twiml_url = (
+        f"https://{host}/outbound-call"
+    )
 
     try:
 
         call = twilio_client.calls.create(
             to=to,
             from_=TWILIO_PHONE_NUMBER,
-            url=twiml_url,
+            url=twiml_url
         )
 
         return {
             "status": "call_started",
             "call_sid": call.sid,
             "to": to,
-            "from": TWILIO_PHONE_NUMBER,
+            "from": TWILIO_PHONE_NUMBER
         }
 
     except Exception as e:
-
-        print(f"Error starting outbound call: {e}")
 
         return JSONResponse(
             status_code=500,
@@ -299,17 +247,14 @@ async def make_outbound_call(
 
 @app.websocket("/media-stream")
 async def handle_media_stream(websocket: WebSocket):
-    """
-    Handle the WebSocket connection between Twilio and OpenAI.
-    """
 
     print("Client connected")
 
     await websocket.accept()
 
     async with websockets.connect(
-        f"wss://api.openai.com/v1/realtime"
-        f"?model=gpt-realtime"
+        "wss://api.openai.com/v1/realtime"
+        "?model=gpt-realtime"
         f"&temperature={TEMPERATURE}",
         additional_headers={
             "Authorization": f"Bearer {OPENAI_API_KEY}"
@@ -321,12 +266,15 @@ async def handle_media_stream(websocket: WebSocket):
         stream_sid = None
         latest_media_timestamp = 0
         last_assistant_item = None
+
         mark_queue = []
+
         response_start_timestamp_twilio = None
 
-        # ----------------------------------------------------
-        # RECEIVE FROM TWILIO
-        # ----------------------------------------------------
+
+        # ====================================================
+        # RECIBIR AUDIO DE TWILIO
+        # ====================================================
 
         async def receive_from_twilio():
 
@@ -362,12 +310,12 @@ async def handle_media_stream(websocket: WebSocket):
                         stream_sid = data["start"]["streamSid"]
 
                         print(
-                            f"Stream started: {stream_sid}"
+                            f"Incoming stream started: {stream_sid}"
                         )
 
-                        response_start_timestamp_twilio = None
                         latest_media_timestamp = 0
-                        last_assistant_item = None
+
+                        mark_queue.clear()
 
                     elif data["event"] == "mark":
 
@@ -382,9 +330,9 @@ async def handle_media_stream(websocket: WebSocket):
                     await openai_ws.close()
 
 
-        # ----------------------------------------------------
-        # SEND TO TWILIO
-        # ----------------------------------------------------
+        # ====================================================
+        # ENVIAR AUDIO DE OPENAI A TWILIO
+        # ====================================================
 
         async def send_to_twilio():
 
@@ -398,13 +346,16 @@ async def handle_media_stream(websocket: WebSocket):
 
                     response = json.loads(openai_message)
 
-                    if response.get("type") in LOG_EVENT_TYPES:
+                    if response["type"] in LOG_EVENT_TYPES:
 
                         print(
-                            f"Received event: {response.get('type')}"
+                            f"Received event: {response['type']}"
                         )
 
-                    # Audio from OpenAI
+                    # ----------------------------------------
+                    # AUDIO GENERADO POR OPENAI
+                    # ----------------------------------------
+
                     if (
                         response.get("type")
                         == "response.output_audio.delta"
@@ -429,26 +380,33 @@ async def handle_media_stream(websocket: WebSocket):
                             audio_delta
                         )
 
-                        if (
-                            response.get("item_id")
-                            and response["item_id"]
-                            != last_assistant_item
-                        ):
+                    # ----------------------------------------
+                    # NUEVA RESPUESTA DEL ASISTENTE
+                    # ----------------------------------------
 
-                            response_start_timestamp_twilio = (
-                                latest_media_timestamp
-                            )
+                    if (
+                        response.get("item_id")
+                        and response["item_id"]
+                        != last_assistant_item
+                    ):
 
-                            last_assistant_item = (
-                                response["item_id"]
-                            )
+                        response_start_timestamp_twilio = (
+                            latest_media_timestamp
+                        )
+
+                        last_assistant_item = (
+                            response["item_id"]
+                        )
 
                         await send_mark(
                             websocket,
                             stream_sid
                         )
 
-                    # Detect caller interruption
+                    # ----------------------------------------
+                    # INTERRUPCIÓN
+                    # ----------------------------------------
+
                     if (
                         response.get("type")
                         == "input_audio_buffer.speech_started"
@@ -462,6 +420,7 @@ async def handle_media_stream(websocket: WebSocket):
 
                             await handle_speech_started_event()
 
+
             except Exception as e:
 
                 print(
@@ -469,25 +428,35 @@ async def handle_media_stream(websocket: WebSocket):
                 )
 
 
-        # ----------------------------------------------------
-        # HANDLE INTERRUPTION
-        # ----------------------------------------------------
+        # ====================================================
+        # MANEJAR INTERRUPCIÓN DEL USUARIO
+        # ====================================================
 
         async def handle_speech_started_event():
 
             nonlocal response_start_timestamp_twilio
             nonlocal last_assistant_item
 
+            print(
+                "Handling speech started event."
+            )
+
             if (
                 mark_queue
-                and response_start_timestamp_twilio
-                is not None
+                and response_start_timestamp_twilio is not None
             ):
 
                 elapsed_time = (
                     latest_media_timestamp
                     - response_start_timestamp_twilio
                 )
+
+                if SHOW_TIMING_MATH:
+
+                    print(
+                        "Elapsed time:",
+                        elapsed_time
+                    )
 
                 if last_assistant_item:
 
@@ -502,25 +471,28 @@ async def handle_media_stream(websocket: WebSocket):
                         json.dumps(truncate_event)
                     )
 
-                await websocket.send_json(
-                    {
-                        "event": "clear",
-                        "streamSid": stream_sid
-                    }
-                )
+                    await websocket.send_json(
+                        {
+                            "event": "clear",
+                            "streamSid": stream_sid
+                        }
+                    )
 
-                mark_queue.clear()
+                    mark_queue.clear()
 
-                last_assistant_item = None
+                    last_assistant_item = None
 
-                response_start_timestamp_twilio = None
+                    response_start_timestamp_twilio = None
 
 
-        # ----------------------------------------------------
-        # SEND MARK
-        # ----------------------------------------------------
+        # ====================================================
+        # MARCA DE AUDIO
+        # ====================================================
 
-        async def send_mark(connection, stream_sid):
+        async def send_mark(
+            connection,
+            stream_sid
+        ):
 
             if stream_sid:
 
@@ -541,7 +513,19 @@ async def handle_media_stream(websocket: WebSocket):
                 )
 
 
-        # Run both directions simultaneously
+        # ====================================================
+        # CONVERSACIÓN INICIAL
+        # ====================================================
+
+        await send_initial_conversation_item(
+            openai_ws
+        )
+
+
+        # ====================================================
+        # EJECUTAR LAS DOS DIRECCIONES DE AUDIO
+        # ====================================================
+
         await asyncio.gather(
             receive_from_twilio(),
             send_to_twilio()
@@ -549,10 +533,12 @@ async def handle_media_stream(websocket: WebSocket):
 
 
 # ============================================================
-# INITIAL CONVERSATION
+# HACER QUE OPENAI HABLE PRIMERO
 # ============================================================
 
-async def send_initial_conversation_item(openai_ws):
+async def send_initial_conversation_item(
+    openai_ws
+):
 
     initial_conversation_item = {
 
@@ -570,11 +556,12 @@ async def send_initial_conversation_item(openai_ws):
                     "type": "input_text",
 
                     "text": (
-                        "Inicia la conversación de manera natural. "
-                        "Preséntate como asistente de voz de Fabián "
-                        "Guzmán Bravo y explica brevemente que llamas "
-                        "de Guzi Stuff para establecer contacto con "
-                        "el área comercial."
+                        "La llamada acaba de comenzar. "
+                        "Saluda de manera breve, natural y profesional. "
+                        "Preséntate como Fabián Guzmán Bravo de Guzi Stuff "
+                        "y pregunta con quién tienes el gusto y si te puede "
+                        "comunicar con la persona encargada del área comercial "
+                        "o distribución."
                     )
                 }
 
@@ -583,7 +570,9 @@ async def send_initial_conversation_item(openai_ws):
     }
 
     await openai_ws.send(
-        json.dumps(initial_conversation_item)
+        json.dumps(
+            initial_conversation_item
+        )
     )
 
     await openai_ws.send(
@@ -596,10 +585,12 @@ async def send_initial_conversation_item(openai_ws):
 
 
 # ============================================================
-# OPENAI REALTIME SESSION
+# CONFIGURAR SESIÓN OPENAI
 # ============================================================
 
-async def initialize_session(openai_ws):
+async def initialize_session(
+    openai_ws
+):
 
     session_update = {
 
@@ -643,7 +634,8 @@ async def initialize_session(openai_ws):
     }
 
     print(
-        "Sending session update"
+        "Sending session update:",
+        json.dumps(session_update)
     )
 
     await openai_ws.send(
@@ -652,7 +644,7 @@ async def initialize_session(openai_ws):
 
 
 # ============================================================
-# START SERVER
+# ARRANQUE
 # ============================================================
 
 if __name__ == "__main__":
