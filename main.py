@@ -84,7 +84,7 @@ SYSTEM_MESSAGE = (
 
 
 # Voz de OpenAI
-VOICE = "marin"
+VOICE = "cedar"
 
 
 LOG_EVENT_TYPES = [
