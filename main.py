@@ -9,6 +9,10 @@ import websockets
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.websockets import WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
+from requests.exceptions import RequestException, Timeout
+from twilio.base.exceptions import TwilioRestException
+from twilio.http.http_client import TwilioHttpClient
 from twilio.twiml.voice_response import VoiceResponse, Connect
 
 from dotenv import load_dotenv
@@ -21,6 +25,7 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PORT = int(os.getenv("PORT", 5050))
+TWILIO_HTTP_TIMEOUT = 15
 
 VOICE = "cedar"
 
@@ -349,24 +354,41 @@ async def make_call(request: Request):
 
     client = Client(
         account_sid,
-        auth_token
+        auth_token,
+        http_client=TwilioHttpClient(timeout=TWILIO_HTTP_TIMEOUT),
     )
 
     host = public_host(request)
 
-    call = client.calls.create(
-        to=to_number,
-        from_=from_number,
-        url=(
-            f"https://{host}"
-            f"/outbound-call?language={language}"
-        ),
-    )
+    try:
+        call = await run_in_threadpool(
+            client.calls.create,
+            to=to_number,
+            from_=from_number,
+            url=(
+                f"https://{host}"
+                f"/outbound-call?language={language}"
+            ),
+        )
+    except Timeout:
+        return JSONResponse(
+            {"error": "The request to Twilio timed out."},
+            status_code=504,
+        )
+    except TwilioRestException as exc:
+        error = {"error": "Twilio rejected the call request."}
+        if exc.code is not None:
+            error["twilio_error_code"] = exc.code
+        return JSONResponse(error, status_code=502)
+    except RequestException:
+        return JSONResponse(
+            {"error": "Could not communicate with Twilio."},
+            status_code=502,
+        )
 
     print(
         f"CALL CREATED | "
         f"SID={call.sid} | "
-        f"TO={to_number} | "
         f"LANGUAGE={language}"
     )
 
@@ -374,7 +396,6 @@ async def make_call(request: Request):
         {
             "status": "call_created",
             "call_sid": call.sid,
-            "to": to_number,
             "language": language,
             "language_name": LANGUAGES[language],
         }
