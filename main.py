@@ -2,6 +2,8 @@ import os
 import json
 import base64
 import asyncio
+import hmac
+import re
 import websockets
 
 from fastapi import FastAPI, WebSocket, Request
@@ -21,6 +23,34 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PORT = int(os.getenv("PORT", 5050))
 
 VOICE = "cedar"
+
+
+def public_host(request: Request) -> str:
+    """Return the public host used by Twilio, preferring Railway's domain."""
+    configured_host = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    forwarded_host = request.headers.get("x-forwarded-host", "").split(",", 1)[0].strip()
+    candidate = configured_host or forwarded_host or request.url.hostname or ""
+
+    # Accept a hostname with an optional scheme/port, but never copy a path,
+    # query, credentials, or malformed host into a TwiML URL.
+    candidate = re.sub(r"^https?://", "", candidate, flags=re.IGNORECASE)
+    candidate = candidate.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if not candidate or not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?", candidate):
+        raise ValueError("Could not determine a valid public host.")
+    return candidate
+
+
+def call_is_authorized(request: Request) -> bool:
+    call_secret = os.getenv("CALL_SECRET", "")
+    if not call_secret:
+        return False
+
+    supplied = request.headers.get("x-call-secret", "")
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+
+    return bool(supplied) and hmac.compare_digest(supplied, call_secret)
 
 # ============================================================
 # LANGUAGES
@@ -235,7 +265,7 @@ async def handle_incoming_call(request: Request):
 
     response = VoiceResponse()
 
-    host = request.url.hostname
+    host = public_host(request)
 
     language = "spanish"
 
@@ -265,6 +295,13 @@ async def handle_incoming_call(request: Request):
 
 @app.api_route("/make-call", methods=["GET", "POST"])
 async def make_call(request: Request):
+
+    if not call_is_authorized(request):
+        status_code = 503 if not os.getenv("CALL_SECRET") else 401
+        return JSONResponse(
+            {"error": "Call authorization is unavailable." if status_code == 503 else "Unauthorized."},
+            status_code=status_code,
+        )
 
     params = dict(request.query_params)
 
@@ -315,7 +352,7 @@ async def make_call(request: Request):
         auth_token
     )
 
-    host = request.url.hostname
+    host = public_host(request)
 
     call = client.calls.create(
         to=to_number,
@@ -359,7 +396,7 @@ async def handle_outbound_call(request: Request):
     if language not in LANGUAGES:
         language = "spanish"
 
-    host = request.url.hostname
+    host = public_host(request)
 
     response = VoiceResponse()
 
@@ -1139,5 +1176,5 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=PORT
+        port=PORT,
     )
