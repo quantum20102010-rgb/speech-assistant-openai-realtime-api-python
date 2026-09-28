@@ -90,6 +90,12 @@ With the development server running, call the phone number you purchased in the 
 
 ## Special features
 
+### Configurable call missions
+
+Mission definitions live in `missions.json`. Each mission contains an objective, information to capture, relevance criteria, and possible post-call actions. The agent uses these as conversation context rather than a fixed script; post-call actions are recommendations only and are not executed automatically.
+
+Set `MISSIONS_FILE` to use another JSON catalog and `DEFAULT_MISSION_ID` to choose its default entry. An authenticated `POST /make-call` request can optionally include a catalog `mission` ID; the selected mission is carried to the Twilio Media Stream as a custom stream parameter. The catalog includes `supplier_outreach` and `market_research` examples. Add missions by following their schema in `missions.json`; IDs and information keys must be unique lowercase slugs.
+
 ### Have the AI speak first
 To have the AI voice assistant talk before the user, uncomment the line `# await send_initial_conversation_item(openai_ws)`. The initial greeting is controlled in `async def send_initial_conversation_item(openai_ws)`.
 

@@ -1,0 +1,51 @@
+{
+  "default_mission": "supplier_outreach",
+  "missions": [
+    {
+      "id": "supplier_outreach",
+      "name": "Contacto comercial con proveedores",
+      "objective": "Explorar de forma cordial si existe una oportunidad de colaboración o distribución para Guzi Stuff, entendiendo primero la oferta y el interés de la otra empresa.",
+      "required_information": [
+        {"key": "products_and_catalog", "description": "Productos, marcas y catálogo relevantes para distribución."},
+        {"key": "wholesale_terms", "description": "Condiciones para distribuidores o compradores B2B."},
+        {"key": "minimum_order", "description": "Pedido mínimo, si existe."},
+        {"key": "pricing_and_discounts", "description": "Precios, niveles de precio o descuentos comunicados."},
+        {"key": "territories_and_exclusivity", "description": "Territorios atendidos y disponibilidad de exclusividad."},
+        {"key": "supplier_contact_and_next_step", "description": "Contacto adecuado y siguiente paso aceptado por ambas partes."}
+      ],
+      "relevance_criteria": [
+        "La oferta encaja con una empresa de comercio electrónico con base en México.",
+        "La persona puede hablar de distribución, ventas mayoristas o referir al contacto adecuado.",
+        "Las condiciones, disponibilidad y compromisos fueron expresados explícitamente."
+      ],
+      "follow_up_actions": [
+        "Solicitar o revisar el catálogo si la empresa acepta compartirlo.",
+        "Preparar una revisión interna de las condiciones B2B antes de negociar.",
+        "Programar contacto humano solo si la otra parte acepta un siguiente paso."
+      ]
+    },
+    {
+      "id": "market_research",
+      "name": "Investigación comercial de mercado",
+      "objective": "Recopilar información expresada por la persona sobre su mercado y prácticas comerciales para orientar una investigación interna, sin presentar su opinión como un hecho verificado.",
+      "required_information": [
+        {"key": "market_and_customer_segment", "description": "Mercado, zona geográfica y tipo de cliente atendido."},
+        {"key": "customer_needs_and_trends", "description": "Necesidades, tendencias o cambios de demanda observados por la persona."},
+        {"key": "products_and_price_ranges", "description": "Categorías de producto y rangos de precio que la persona haya compartido."},
+        {"key": "sales_channels", "description": "Canales de venta o distribución mencionados."},
+        {"key": "competition_and_differentiators", "description": "Alternativas competitivas y diferenciadores descritos por la persona."},
+        {"key": "evidence_and_follow_up", "description": "Fuente o experiencia que sustenta la información y seguimiento aceptado."}
+      ],
+      "relevance_criteria": [
+        "La información es pertinente para evaluar oportunidades comerciales o de distribución.",
+        "Separa observaciones personales de cifras, fuentes o hechos verificables.",
+        "Registra contexto geográfico, temporal y las limitaciones que mencione la persona."
+      ],
+      "follow_up_actions": [
+        "Contrastar internamente las observaciones con fuentes independientes antes de usarlas como hechos.",
+        "Compartir los hallazgos relevantes con el equipo para decidir si hace falta más investigación.",
+        "Solicitar una entrevista de seguimiento solo con aceptación explícita."
+      ]
+    }
+  ]
+}
