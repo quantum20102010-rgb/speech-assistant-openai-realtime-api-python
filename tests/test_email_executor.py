@@ -382,6 +382,12 @@ class EmailExecutorTests(unittest.TestCase):
             self.assertEqual(storage.record_email_execution_result(MISSION, action["action_id"], sent), sent)
             changed = {**sent, "provider_message_id": "different"}
             self.assertEqual(storage.record_email_execution_result(MISSION, action["action_id"], changed), sent)
+            saved_action = next(
+                item for item in storage.latest_mission_state(MISSION)["actions"]
+                if item["action_id"] == action["action_id"]
+            )
+            self.assertEqual(saved_action["status"], "executed")
+            self.assertEqual(saved_action["executed_at"], NOW.isoformat())
 
     def test_fake_provider_failure_can_be_stored_without_success_fields(self):
         state, draft, result, action, _ = artifacts()
@@ -393,9 +399,65 @@ class EmailExecutorTests(unittest.TestCase):
             result["mission_state"] = state
             storage.write(result)
             saved = storage.record_email_execution_result(MISSION, action["action_id"], failure)
-        self.assertEqual(saved, failure)
-        self.assertFalse(saved["sent"])
-        self.assertIsNone(saved["executed_at"])
+            self.assertEqual(saved, failure)
+            self.assertFalse(saved["sent"])
+            self.assertIsNone(saved["executed_at"])
+            failed_action = next(
+                item for item in storage.latest_mission_state(MISSION)["actions"]
+                if item["action_id"] == action["action_id"]
+            )
+            self.assertEqual(failed_action["status"], "failed")
+            self.assertIsNone(failed_action["executed_at"])
+
+    def test_execution_ledger_survives_later_reports_and_is_mission_scoped(self):
+        state, _draft, result, action, _decision = artifacts()
+        result["mission_state"] = state
+        with tempfile.TemporaryDirectory() as directory:
+            storage = LocalFileCallResultStorage(directory)
+            storage.write(result)
+            sent = {
+                "mission_id": MISSION,
+                "action_id": action["action_id"],
+                "status": "sent",
+                "sent": True,
+                "dry_run": False,
+                "executed_at": NOW.isoformat(),
+            }
+            self.assertEqual(
+                storage.record_email_execution_result(MISSION, action["action_id"], sent),
+                sent,
+            )
+
+            next_call_state = json.loads(json.dumps(state))
+            storage.write({
+                "mission_id": MISSION,
+                "call_status": "completed",
+                "transcript": "Transcript from the next call.",
+                "mission_state": next_call_state,
+            })
+            latest = storage.latest_mission_result(MISSION)
+            self.assertEqual(
+                latest["email_execution_results"][action["action_id"]], sent
+            )
+            latest_action = next(
+                item for item in latest["mission_state"]["actions"]
+                if item["action_id"] == action["action_id"]
+            )
+            self.assertEqual(latest_action["status"], "executed")
+            self.assertEqual(latest_action["executed_at"], NOW.isoformat())
+
+            other_state, _other_draft, _other_result, other_action, _ = artifacts(
+                mission_id=OTHER
+            )
+            storage.write({"mission_id": OTHER, "mission_state": other_state})
+            other_latest = storage.latest_mission_result(OTHER)
+            self.assertNotIn("email_execution_results", other_latest)
+            self.assertEqual(other_latest["mission_state"]["actions"][0]["status"], "approved")
+
+            ledger_path = next(Path(directory).glob("mission-executions-*.json"))
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            self.assertEqual(ledger["mission_id"], MISSION)
+            self.assertNotIn("transcript", json.dumps(ledger))
 
     def test_provider_exception_is_sanitized_and_does_not_expose_secrets(self):
         class RaisingFake:
@@ -511,6 +573,56 @@ class EmailExecutorEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(execution["status"], "dry_run")
         self.assertIs(execution["sent"], False)
         self.assertIs(execution["dry_run"], True)
+        saved_action = next(
+            item for item in persisted["mission_state"]["actions"]
+            if item["action_id"] == execution["action_id"]
+        )
+        self.assertEqual(saved_action["status"], "dry_run")
+        self.assertIsNone(saved_action["executed_at"])
+
+    async def test_controlled_email_success_reconciles_action_and_duplicate_approval(self):
+        provider = FakeEmailProvider()
+        with patch.dict(os.environ, {
+            "EMAIL_ENABLED": "true", "EMAIL_DRY_RUN": "false", "EMAIL_PROVIDER": "resend",
+            "RESEND_API_KEY": "re_test_key_not_real", "RESEND_FROM": "sender@example.com",
+        }, clear=False), patch.object(main, "email_action_provider", provider):
+            response, action = await self.seed_and_approve()
+
+            saved = self.storage.latest_mission_result(MISSION)
+            execution = saved["email_execution_results"][action["action_id"]]
+            saved_action = next(
+                item for item in saved["mission_state"]["actions"]
+                if item["action_id"] == action["action_id"]
+            )
+            repeated = await main.resolve_mission_decision_endpoint(
+                MISSION, saved["mission_state"]["decisions"][0]["decision_id"],
+                request("POST", "/resolve", body={"status": "approved"}),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(execution["status"], "sent")
+        self.assertTrue(execution["sent"])
+        self.assertEqual(execution["action_id"], action["action_id"])
+        self.assertEqual(saved_action["status"], "executed")
+        self.assertEqual(saved_action["executed_at"], execution["executed_at"])
+        self.assertEqual(saved_action["approval_status"], "approved")
+        self.assertEqual(repeated.status_code, 409)
+        self.assertEqual(len(provider.attempts), 1)
+
+    async def test_email_configuration_block_does_not_mark_action_executed(self):
+        with patch.dict(os.environ, {
+            "EMAIL_ENABLED": "true", "EMAIL_DRY_RUN": "false", "EMAIL_PROVIDER": "resend",
+            "RESEND_API_KEY": "", "RESEND_FROM": "sender@example.com",
+        }, clear=False):
+            response, action = await self.seed_and_approve()
+        self.assertEqual(response.status_code, 200)
+        saved = self.storage.latest_mission_result(MISSION)
+        saved_action = next(
+            item for item in saved["mission_state"]["actions"]
+            if item["action_id"] == action["action_id"]
+        )
+        self.assertEqual(saved_action["status"], "approved")
+        self.assertIsNone(saved_action["executed_at"])
 
     async def test_approved_action_uses_only_the_injected_fake_provider(self):
         provider = FakeEmailProvider()

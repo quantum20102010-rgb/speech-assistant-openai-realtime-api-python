@@ -96,6 +96,8 @@ Mission definitions live in `missions.json`. Each mission contains an objective,
 
 Set `MISSIONS_FILE` to use another JSON catalog and `DEFAULT_MISSION_ID` to choose its default entry. An authenticated `POST /make-call` request can optionally include a catalog `mission` ID; the selected mission is carried to the Twilio Media Stream as a custom stream parameter. The catalog includes `supplier_outreach` and `market_research` examples. Add missions by following their schema in `missions.json`; IDs and information keys must be unique lowercase slugs.
 
+`POST /make-call` accepts an optional `Idempotency-Key` header (1–128 letters, numbers, `.`, `_`, `:`, or `-`). Repeating the same authorized request with the same key replays its saved response without creating another call; reusing the key with different JSON parameters returns `409`. Requests without the header retain legacy behavior and are not deduplicated. The in-memory idempotency records are local to one process and retained for 24 hours after completion.
+
 ### Have the AI speak first
 To have the AI voice assistant talk before the user, uncomment the line `# await send_initial_conversation_item(openai_ws)`. The initial greeting is controlled in `async def send_initial_conversation_item(openai_ws)`.
 

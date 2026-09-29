@@ -1,11 +1,13 @@
 """Structured call reports and replaceable local result storage."""
 
 import json
+import hashlib
 import os
 import re
 import tempfile
 import threading
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -465,6 +467,203 @@ class LocalFileCallResultStorage(CallResultStorage):
         self.directory = Path(directory or os.getenv("CALL_RESULTS_DIR", "call_results"))
         self._lock = threading.RLock()
 
+    @staticmethod
+    def _execution_fields():
+        return ("email_execution_results", "whatsapp_execution_results")
+
+    def _execution_ledger_path(self, mission_id):
+        digest = hashlib.sha256(mission_id.encode("utf-8")).hexdigest()
+        return self.directory / f"mission-executions-{digest}.json"
+
+    @staticmethod
+    def _valid_execution_record(field, mission_id, action_id, record):
+        if (not isinstance(action_id, str) or not isinstance(record, dict)
+                or record.get("mission_id") != mission_id
+                or record.get("action_id") != action_id):
+            return False
+        if field == "email_execution_results":
+            return (
+                record.get("status") == "dry_run"
+                and record.get("sent") is False
+                and record.get("dry_run") is True
+            ) or (
+                record.get("status") == "sent"
+                and record.get("sent") is True
+                and record.get("dry_run") is False
+                and isinstance(record.get("executed_at"), str)
+                and bool(record.get("executed_at"))
+            ) or (
+                record.get("status") == "blocked"
+                and record.get("sent") is False
+                and record.get("dry_run") is False
+                and record.get("reason_code") == "email_provider_failed"
+            )
+        if field == "whatsapp_execution_results":
+            return (
+                record.get("status") == "dry_run"
+                and record.get("sent") is False
+                and record.get("dry_run") is True
+            )
+        return False
+
+    def _read_execution_maps(self, mission_id):
+        maps = {field: {} for field in self._execution_fields()}
+        if not isinstance(mission_id, str):
+            return maps
+        path = self._execution_ledger_path(mission_id)
+        try:
+            ledger = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            return maps
+        if not isinstance(ledger, dict) or ledger.get("mission_id") != mission_id:
+            return maps
+        for field in maps:
+            values = ledger.get(field)
+            if isinstance(values, dict):
+                maps[field] = {
+                    action_id: deepcopy(record)
+                    for action_id, record in values.items()
+                    if self._valid_execution_record(field, mission_id, action_id, record)
+                }
+        return maps
+
+    def _collect_execution_maps(self, mission_id, result=None):
+        maps = self._read_execution_maps(mission_id)
+        if isinstance(result, dict):
+            for field in maps:
+                inline = result.get(field)
+                if not isinstance(inline, dict):
+                    continue
+                for action_id, record in inline.items():
+                    if (action_id not in maps[field]
+                            and self._valid_execution_record(field, mission_id, action_id, record)):
+                        maps[field][action_id] = deepcopy(record)
+        return maps
+
+    def _write_execution_maps(self, mission_id, maps):
+        if not isinstance(mission_id, str):
+            return False
+        ledger = {"mission_id": mission_id}
+        for field in self._execution_fields():
+            ledger[field] = maps.get(field, {})
+        try:
+            content = json.dumps(ledger, ensure_ascii=False, indent=2, allow_nan=False)
+            self._atomic_private_write(self._execution_ledger_path(mission_id), content)
+            return True
+        except (OSError, TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _has_formal_action_approval(mission_state, action, mission_id, action_type):
+        if (not isinstance(mission_state, dict)
+                or mission_state.get("mission_id") != mission_id
+                or action.get("mission_id") != mission_id
+                or action.get("action_type") != action_type
+                or action.get("requires_approval") is not True):
+            return False
+        decision_id = action.get("approval_decision_id")
+        decisions = mission_state.get("decisions")
+        decision = next((item for item in decisions if isinstance(item, dict)
+                         and item.get("decision_id") == decision_id), None) \
+            if isinstance(decisions, list) else None
+        if (not isinstance(decision, dict)
+                or decision.get("mission_id") != mission_id
+                or decision.get("status") != "approved"
+                or decision.get("resolved_by") != "Fabian"):
+            return False
+        try:
+            from action_executor import classify_action_type, create_action
+            expected = create_action(
+                mission_id, action_type, action.get("description"),
+                approval_decision_id=decision_id,
+            )
+        except (TypeError, ValueError):
+            return False
+        return (
+            expected.get("action_id") == action.get("action_id")
+            and classify_action_type(decision.get("description")) == action_type
+        )
+
+    def _reconcile_mission_state(self, mission_state, mission_id, maps):
+        if (not isinstance(mission_state, dict)
+                or mission_state.get("mission_id") != mission_id):
+            return mission_state
+        actions = mission_state.get("actions")
+        if not isinstance(actions, list):
+            return mission_state
+        for action in actions:
+            if not isinstance(action, dict) or action.get("mission_id") != mission_id:
+                continue
+            action_type = action.get("action_type")
+            field = {
+                "send_email": "email_execution_results",
+                "send_whatsapp": "whatsapp_execution_results",
+            }.get(action_type)
+            if not field:
+                continue
+            execution = maps[field].get(action.get("action_id"))
+            if (not isinstance(execution, dict)
+                    or not self._has_formal_action_approval(
+                        mission_state, action, mission_id, action_type
+                    )):
+                continue
+
+            if execution.get("status") == "sent" and execution.get("sent") is True:
+                action.update({
+                    "status": "executed",
+                    "approval_status": "approved",
+                    "executed_at": execution.get("executed_at"),
+                    "reason_code": execution.get("reason_code") or "email_sent",
+                })
+            elif execution.get("status") == "dry_run" and execution.get("dry_run") is True:
+                action.update({
+                    "status": "dry_run",
+                    "approval_status": "approved",
+                    "executed_at": None,
+                    "reason_code": execution.get("reason_code") or "dry_run_only",
+                })
+            elif (field == "email_execution_results"
+                    and execution.get("status") == "blocked"
+                    and execution.get("reason_code") == "email_provider_failed"):
+                action.update({
+                    "status": "failed",
+                    "approval_status": "approved",
+                    "executed_at": None,
+                    "reason_code": "email_provider_failed",
+                })
+        return mission_state
+
+    def _hydrate_result(self, result):
+        if not isinstance(result, dict):
+            return result
+        mission_id = result.get("mission_id")
+        maps = self._collect_execution_maps(mission_id, result)
+        result = deepcopy(result)
+        self._reconcile_mission_state(result.get("mission_state"), mission_id, maps)
+        for field, values in maps.items():
+            if values:
+                result[field] = values
+        return result
+
+    def _report_views(self, result):
+        """Return a compact stored report and a hydrated view for text rendering."""
+        stored = deepcopy(result)
+        mission_id = stored.get("mission_id")
+        maps = self._collect_execution_maps(mission_id, stored)
+        has_executions = any(maps[field] for field in maps)
+        if has_executions and not self._write_execution_maps(mission_id, maps):
+            # Keep legacy inline data if it could not be migrated durably.
+            self._reconcile_mission_state(stored.get("mission_state"), mission_id, maps)
+            return stored, self._hydrate_result(stored)
+        self._reconcile_mission_state(stored.get("mission_state"), mission_id, maps)
+        for field in maps:
+            stored.pop(field, None)
+        rendered = deepcopy(stored)
+        for field, values in maps.items():
+            if values:
+                rendered[field] = values
+        return stored, rendered
+
     def _atomic_private_write(self, destination, content):
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         if os.name != "nt":
@@ -492,15 +691,9 @@ class LocalFileCallResultStorage(CallResultStorage):
     def latest_mission_state(self, mission_id):
         """Read the latest persisted state for this mission, if one exists."""
         with self._lock:
-            latest_path = self._latest_mission_result_path(mission_id)
-            if latest_path is None:
-                return None
-            try:
-                result = json.loads(latest_path.read_text(encoding="utf-8"))
-                state = result.get("mission_state")
-                return state if isinstance(state, dict) else None
-            except (OSError, json.JSONDecodeError, TypeError):
-                return None
+            result = self.latest_mission_result(mission_id)
+            state = result.get("mission_state") if isinstance(result, dict) else None
+            return state if isinstance(state, dict) else None
 
     def latest_mission_result(self, mission_id):
         """Read a copy of the latest persisted result for a mission ID."""
@@ -510,7 +703,9 @@ class LocalFileCallResultStorage(CallResultStorage):
                 return None
             try:
                 result = json.loads(path.read_text(encoding="utf-8"))
-                return result if isinstance(result, dict) and result.get("mission_id") == mission_id else None
+                return self._hydrate_result(result) if (
+                    isinstance(result, dict) and result.get("mission_id") == mission_id
+                ) else None
             except (OSError, json.JSONDecodeError, TypeError):
                 return None
 
@@ -543,8 +738,9 @@ class LocalFileCallResultStorage(CallResultStorage):
                     current.pop("approved_content_sha256", None)
                 current["sent"] = False
                 current["requires_approval"] = True
-                json_data = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
-                text_data = render_call_report(result)
+                stored, rendered = self._report_views(result)
+                json_data = json.dumps(stored, ensure_ascii=False, indent=2, allow_nan=False)
+                text_data = render_call_report(rendered)
                 self._atomic_private_write(path, json_data)
                 self._atomic_private_write(path.with_suffix(".txt"), text_data)
                 return True
@@ -553,71 +749,56 @@ class LocalFileCallResultStorage(CallResultStorage):
 
     def record_email_execution_result(self, mission_id, action_id, execution_result):
         """Persist one email outcome by action ID, without overwriting it."""
-        with self._lock:
-            path = self._latest_mission_result_path(mission_id)
-            if path is None or not isinstance(action_id, str) or not isinstance(execution_result, dict):
-                return None
-            try:
-                result = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(result, dict):
-                    return None
-                state = result.get("mission_state")
-                if result.get("mission_id") != mission_id or not isinstance(state, dict) or state.get("mission_id") != mission_id:
-                    return None
-                executions = result.setdefault("email_execution_results", {})
-                if not isinstance(executions, dict):
-                    return None
-                if action_id in executions:
-                    return executions[action_id]
-                status = execution_result.get("status")
-                valid_dry_run = status == "dry_run" and execution_result.get("sent") is False and execution_result.get("dry_run") is True
-                valid_sent = status == "sent" and execution_result.get("sent") is True and execution_result.get("dry_run") is False
-                valid_provider_failure = (
-                    status == "blocked"
-                    and execution_result.get("sent") is False
-                    and execution_result.get("dry_run") is False
-                    and execution_result.get("reason_code") == "email_provider_failed"
-                )
-                if (execution_result.get("mission_id") != mission_id
-                        or execution_result.get("action_id") != action_id
-                        or not (valid_dry_run or valid_sent or valid_provider_failure)):
-                    return None
-                executions[action_id] = execution_result
-                json_data = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
-                text_data = render_call_report(result)
-                self._atomic_private_write(path, json_data)
-                self._atomic_private_write(path.with_suffix(".txt"), text_data)
-                return execution_result
-            except (OSError, json.JSONDecodeError, TypeError, ValueError):
-                return None
+        return self._record_execution_result(
+            "email_execution_results", mission_id, action_id, execution_result
+        )
 
     def record_whatsapp_execution_result(self, mission_id, action_id, execution_result):
         """Persist one WhatsApp dry-run result without overwriting prior output."""
+        return self._record_execution_result(
+            "whatsapp_execution_results", mission_id, action_id, execution_result
+        )
+
+    def _record_execution_result(self, field, mission_id, action_id, execution_result):
         with self._lock:
             path = self._latest_mission_result_path(mission_id)
             if path is None or not isinstance(action_id, str) or not isinstance(execution_result, dict):
                 return None
             try:
                 result = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(result, dict):
+                if not isinstance(result, dict) or result.get("mission_id") != mission_id:
                     return None
                 state = result.get("mission_state")
-                if (result.get("mission_id") != mission_id or not isinstance(state, dict)
-                        or state.get("mission_id") != mission_id):
+                if not isinstance(state, dict) or state.get("mission_id") != mission_id:
                     return None
-                executions = result.setdefault("whatsapp_execution_results", {})
-                if not isinstance(executions, dict):
+                action_type = "send_email" if field == "email_execution_results" else "send_whatsapp"
+                actions = state.get("actions")
+                action = next((item for item in actions if isinstance(item, dict)
+                               and item.get("action_id") == action_id), None) \
+                    if isinstance(actions, list) else None
+                if action is None or not self._has_formal_action_approval(
+                        state, action, mission_id, action_type):
                     return None
-                if action_id in executions:
-                    return executions[action_id]
-                if (execution_result.get("mission_id") != mission_id
-                        or execution_result.get("action_id") != action_id
-                        or execution_result.get("sent") is not False
-                        or execution_result.get("dry_run") is not True):
+
+                maps = self._collect_execution_maps(mission_id, result)
+                if action_id in maps[field]:
+                    self._reconcile_mission_state(state, mission_id, maps)
+                    stored, rendered = self._report_views(result)
+                    self._atomic_private_write(
+                        path, json.dumps(stored, ensure_ascii=False, indent=2, allow_nan=False)
+                    )
+                    self._atomic_private_write(path.with_suffix(".txt"), render_call_report(rendered))
+                    return maps[field][action_id]
+                if not self._valid_execution_record(field, mission_id, action_id, execution_result):
                     return None
-                executions[action_id] = execution_result
-                json_data = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
-                text_data = render_call_report(result)
+
+                maps[field][action_id] = deepcopy(execution_result)
+                if not self._write_execution_maps(mission_id, maps):
+                    return None
+                self._reconcile_mission_state(state, mission_id, maps)
+                stored, rendered = self._report_views(result)
+                json_data = json.dumps(stored, ensure_ascii=False, indent=2, allow_nan=False)
+                text_data = render_call_report(rendered)
                 self._atomic_private_write(path, json_data)
                 self._atomic_private_write(path.with_suffix(".txt"), text_data)
                 return execution_result
@@ -661,8 +842,9 @@ class LocalFileCallResultStorage(CallResultStorage):
                 ):
                     return False
                 result["mission_state"] = mission_state
-                json_data = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
-                text_data = render_call_report(result)
+                stored, rendered = self._report_views(result)
+                json_data = json.dumps(stored, ensure_ascii=False, indent=2, allow_nan=False)
+                text_data = render_call_report(rendered)
                 self._atomic_private_write(path, json_data)
                 self._atomic_private_write(path.with_suffix(".txt"), text_data)
                 return True
@@ -689,11 +871,13 @@ class LocalFileCallResultStorage(CallResultStorage):
                 return None
             result["mission_state"] = updated
             try:
-                json_data = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
-                text_data = render_call_report(result)
+                stored, rendered = self._report_views(result)
+                json_data = json.dumps(stored, ensure_ascii=False, indent=2, allow_nan=False)
+                text_data = render_call_report(rendered)
                 self._atomic_private_write(path, json_data)
                 self._atomic_private_write(path.with_suffix(".txt"), text_data)
-                return updated
+                saved_state = stored.get("mission_state")
+                return saved_state if isinstance(saved_state, dict) else updated
             except (OSError, TypeError, ValueError):
                 return None
 
@@ -702,11 +886,12 @@ class LocalFileCallResultStorage(CallResultStorage):
             return self._write_unlocked(result)
 
     def _write_unlocked(self, result):
+        stored, rendered = self._report_views(result)
         identifier = uuid.uuid4().hex
         json_path = self.directory / f"call-{identifier}.json"
         txt_path = self.directory / f"call-{identifier}.txt"
-        json_data = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
-        text_data = render_call_report(result)
+        json_data = json.dumps(stored, ensure_ascii=False, indent=2, allow_nan=False)
+        text_data = render_call_report(rendered)
         self._atomic_private_write(json_path, json_data)
         try:
             self._atomic_private_write(txt_path, text_data)

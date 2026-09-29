@@ -44,7 +44,7 @@ FORBIDDEN_TYPES = {
 }
 ACTION_STATUSES = {
     "prepared", "awaiting_approval", "approved", "rejected", "deferred",
-    "blocked_by_policy", "executed", "failed",
+    "blocked_by_policy", "dry_run", "executed", "failed",
 }
 _MISSION_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _EMAIL = re.compile(r"\b[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+\b")

@@ -293,6 +293,12 @@ class WhatsAppExecutorIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(output["sent"], False)
         self.assertIs(output["dry_run"], True)
         self.assertNotIn("transcript", output)
+        saved_action = next(
+            item for item in saved["mission_state"]["actions"]
+            if item["action_id"] == action["action_id"]
+        )
+        self.assertEqual(saved_action["status"], "dry_run")
+        self.assertIsNone(saved_action["executed_at"])
 
     async def test_result_endpoint_authentication_mission_and_masking(self):
         _, action = await self.seed_pending_action()

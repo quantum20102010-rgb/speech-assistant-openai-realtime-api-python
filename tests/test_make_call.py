@@ -83,6 +83,7 @@ class MakeCallTests(unittest.IsolatedAsyncioTestCase):
         self.result_directory = tempfile.TemporaryDirectory()
         main.call_result_storage = LocalFileCallResultStorage(self.result_directory.name)
         main.call_manager = InMemoryCallManager()
+        main.make_call_idempotency.clear()
         self.saved_environment = {
             key: os.environ.get(key)
             for key in (
@@ -130,7 +131,10 @@ class MakeCallTests(unittest.IsolatedAsyncioTestCase):
         self.result_directory.cleanup()
 
     async def test_authorization_is_required_before_twilio(self):
-        request = make_request({"to": TEST_NUMBER})
+        request = make_request(
+            {"to": TEST_NUMBER},
+            headers=[(b"idempotency-key", b"unauthorized-request")],
+        )
         with patch("twilio.rest.Client") as twilio_client:
             response = await main.make_call(request)
 
@@ -138,6 +142,98 @@ class MakeCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(TEST_NUMBER.encode(), response.body)
         self.assertNotIn(TEST_SECRET.encode(), response.body)
         twilio_client.assert_not_called()
+
+    async def test_idempotency_key_replays_success_without_second_reservation_or_call(self):
+        headers = [
+            (b"x-call-secret", TEST_SECRET.encode()),
+            (b"idempotency-key", b"retry-call-001"),
+        ]
+        first_request = make_request({"to": TEST_NUMBER, "language": "spanish"}, headers)
+        retry_request = make_request({"to": TEST_NUMBER, "language": "spanish"}, headers)
+        with patch("twilio.rest.Client") as twilio_client:
+            twilio_client.return_value.calls.create.return_value.sid = "CA_TEST"
+            first_response = await main.make_call(first_request)
+            reservation_count = main.call_manager.active_count
+            retry_response = await main.make_call(retry_request)
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(retry_response.status_code, 200)
+        self.assertEqual(first_response.body, retry_response.body)
+        self.assertEqual(reservation_count, 1)
+        self.assertEqual(main.call_manager.active_count, 1)
+        twilio_client.return_value.calls.create.assert_called_once()
+
+    async def test_reusing_idempotency_key_with_changed_parameters_is_rejected(self):
+        headers = [
+            (b"x-call-secret", TEST_SECRET.encode()),
+            (b"idempotency-key", b"retry-call-002"),
+        ]
+        first_request = make_request({"to": TEST_NUMBER}, headers)
+        changed_request = make_request({"to": "+12125550101"}, headers)
+        with patch("twilio.rest.Client") as twilio_client:
+            twilio_client.return_value.calls.create.return_value.sid = "CA_TEST"
+            first_response = await main.make_call(first_request)
+            changed_response = await main.make_call(changed_request)
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(changed_response.status_code, 409)
+        self.assertEqual(main.call_manager.active_count, 1)
+        twilio_client.return_value.calls.create.assert_called_once()
+
+    async def test_different_idempotency_key_still_obeys_call_limits(self):
+        auth = (b"x-call-secret", TEST_SECRET.encode())
+        first_request = make_request(
+            {"to": TEST_NUMBER}, [auth, (b"idempotency-key", b"distinct-call-001")]
+        )
+        second_request = make_request(
+            {"to": TEST_NUMBER}, [auth, (b"idempotency-key", b"distinct-call-002")]
+        )
+        with patch("twilio.rest.Client") as twilio_client:
+            twilio_client.return_value.calls.create.return_value.sid = "CA_TEST"
+            first_response = await main.make_call(first_request)
+            second_response = await main.make_call(second_request)
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 429)
+        self.assertEqual(main.call_manager.active_count, 1)
+        twilio_client.return_value.calls.create.assert_called_once()
+
+    async def test_missing_idempotency_key_preserves_legacy_behavior(self):
+        request = make_request(
+            {"to": TEST_NUMBER},
+            headers=[(b"x-call-secret", TEST_SECRET.encode())],
+        )
+        with patch("twilio.rest.Client") as twilio_client:
+            twilio_client.return_value.calls.create.return_value.sid = "CA_TEST"
+            response = await main.make_call(request)
+        self.assertEqual(response.status_code, 200)
+        twilio_client.return_value.calls.create.assert_called_once()
+
+    async def test_security_rejection_does_not_reserve_idempotency_key(self):
+        headers = [
+            (b"x-call-secret", TEST_SECRET.encode()),
+            (b"idempotency-key", b"retry-after-policy-rejection"),
+        ]
+        request = make_request({"to": TEST_NUMBER}, headers)
+        main.evaluate_call_availability.return_value = CallAvailabilityDecision(
+            False, "outside_operating_hours", "America/Mexico_City",
+            "2026-09-28T20:00:00-06:00", "monday", "09:00", "17:00",
+        )
+        with patch("twilio.rest.Client") as twilio_client:
+            rejected = await main.make_call(request)
+            main.evaluate_call_availability.return_value = CallAvailabilityDecision(
+                True, "within_operating_hours", "America/Mexico_City",
+                "2026-09-28T10:00:00-06:00", "monday", "09:00", "17:00",
+            )
+            twilio_client.return_value.calls.create.return_value.sid = "CA_TEST"
+            accepted = await main.make_call(
+                make_request({"to": TEST_NUMBER}, headers)
+            )
+
+        self.assertEqual(rejected.status_code, 403)
+        self.assertEqual(accepted.status_code, 200)
+        twilio_client.return_value.calls.create.assert_called_once()
+        self.assertEqual(main.call_manager.active_count, 1)
 
     async def test_incorrect_authorization_is_rejected_before_twilio(self):
         request = make_request(

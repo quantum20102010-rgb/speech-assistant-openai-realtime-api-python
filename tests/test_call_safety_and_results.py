@@ -369,6 +369,73 @@ class CallResultTests(unittest.IsolatedAsyncioTestCase):
         realtime_connect.assert_not_called()
         twilio_client.assert_not_called()
         websocket.receive_text.assert_not_awaited()
+        websocket.accept.assert_not_awaited()
+        websocket.close.assert_awaited_once_with(code=1008)
+
+    async def test_media_websocket_valid_twilio_signature_continues_to_admission(self):
+        os.environ["CALLS_ENABLED"] = "true"
+        os.environ["RAILWAY_PUBLIC_DOMAIN"] = "test-domain.up.railway.app"
+        public_url = "wss://test-domain.up.railway.app/media-stream/spanish"
+        signature = RequestValidator(os.environ["TWILIO_AUTH_TOKEN"]).compute_signature(
+            public_url, {}
+        )
+        websocket = AsyncMock()
+        websocket.headers = {"x-twilio-signature": signature}
+        websocket.url = type("URL", (), {"path": "/media-stream/spanish", "query": ""})()
+        websocket.receive_text.return_value = json.dumps({
+            "event": "start",
+            "start": {
+                "streamSid": "MZ_TEST",
+                "callSid": "CA_TEST",
+                "customParameters": {"mission": "market_research"},
+            },
+        })
+
+        with patch.object(
+            main.call_manager,
+            "admit_media_stream",
+            side_effect=CallAdmissionError("test_rejection"),
+        ) as admit, patch("main.finish_call", new_callable=AsyncMock), patch(
+            "main.write_call_result", new_callable=AsyncMock
+        ), patch("main.check_openai_readiness", new_callable=AsyncMock) as readiness, patch(
+            "main.websockets.connect"
+        ) as realtime_connect:
+            await main.handle_media_stream(websocket, "spanish")
+
+        websocket.accept.assert_awaited_once()
+        websocket.receive_text.assert_awaited_once()
+        admit.assert_called_once()
+        readiness.assert_not_awaited()
+        realtime_connect.assert_not_called()
+
+    async def test_media_websocket_missing_or_invalid_signature_rejects_before_admission(self):
+        os.environ["CALLS_ENABLED"] = "true"
+        os.environ["RAILWAY_PUBLIC_DOMAIN"] = "test-domain.up.railway.app"
+
+        for supplied_signature in (None, "invalid-signature"):
+            with self.subTest(signature_present=supplied_signature is not None):
+                websocket = AsyncMock()
+                websocket.headers = (
+                    {} if supplied_signature is None
+                    else {"x-twilio-signature": supplied_signature}
+                )
+                websocket.url = type(
+                    "URL", (), {"path": "/media-stream/spanish", "query": ""}
+                )()
+                before_reservations = main.call_manager.active_count
+
+                with patch.object(main.call_manager, "admit_media_stream") as admit, patch(
+                    "main.check_openai_readiness", new_callable=AsyncMock
+                ) as readiness, patch("main.websockets.connect") as realtime_connect:
+                    await main.handle_media_stream(websocket, "spanish")
+
+                websocket.accept.assert_not_awaited()
+                websocket.close.assert_awaited_once_with(code=1008)
+                websocket.receive_text.assert_not_awaited()
+                admit.assert_not_called()
+                self.assertEqual(main.call_manager.active_count, before_reservations)
+                readiness.assert_not_awaited()
+                realtime_connect.assert_not_called()
 
     async def test_model_fields_redact_known_secrets(self):
         previous = os.environ.get("CALL_SECRET")

@@ -3,9 +3,12 @@ import json
 import binascii
 import base64
 import asyncio
+import hashlib
 import hmac
 import math
 import re
+import threading
+import time
 import websockets
 from collections import deque
 from datetime import datetime, timezone
@@ -99,6 +102,67 @@ def configured_call_duration_limit() -> float:
 MAX_CALL_DURATION_SECONDS = min(configured_call_duration_limit(), 240)
 call_manager = InMemoryCallManager()
 call_result_storage = LocalFileCallResultStorage()
+
+
+class InMemoryMakeCallIdempotency:
+    """Single-process, bounded idempotency records for authenticated call requests."""
+
+    RETENTION_SECONDS = 86400
+    MAX_ENTRIES = 10000
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._entries = {}
+
+    def begin(self, identity_key, fingerprint):
+        now = self._clock()
+        with self._lock:
+            expired = [
+                key for key, entry in self._entries.items()
+                if entry["state"] == "complete" and entry["expires_at"] <= now
+            ]
+            for key in expired:
+                self._entries.pop(key, None)
+
+            entry = self._entries.get(identity_key)
+            if entry:
+                if entry["fingerprint"] != fingerprint:
+                    return "conflict", None
+                if entry["state"] == "pending":
+                    return "pending", None
+                return "replay", (entry["status_code"], dict(entry["body"]))
+
+            if len(self._entries) >= self.MAX_ENTRIES:
+                return "full", None
+            self._entries[identity_key] = {
+                "fingerprint": fingerprint,
+                "state": "pending",
+                "expires_at": None,
+            }
+            return "new", None
+
+    def complete(self, identity_key, status_code, body):
+        with self._lock:
+            entry = self._entries.get(identity_key)
+            if entry:
+                entry.update(
+                    state="complete",
+                    status_code=status_code,
+                    body=dict(body),
+                    expires_at=self._clock() + self.RETENTION_SECONDS,
+                )
+
+    def discard(self, identity_key):
+        with self._lock:
+            self._entries.pop(identity_key, None)
+
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+
+
+make_call_idempotency = InMemoryMakeCallIdempotency()
 def configured_email_action_provider():
     """Build the explicitly selected provider only when fully configured."""
     if os.getenv("EMAIL_ENABLED", "false").strip().casefold() != "true":
@@ -642,6 +706,26 @@ def public_host(request: Request) -> str:
     if not candidate or not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?", candidate):
         raise ValueError("Could not determine a valid public host.")
     return candidate
+
+
+def valid_twilio_media_signature(websocket: WebSocket) -> bool:
+    """Validate Twilio's signature for the public media WebSocket URL."""
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+    signature = websocket.headers.get("x-twilio-signature", "")
+    if not auth_token or not signature:
+        return False
+
+    try:
+        host = public_host(websocket)
+        request_url = f"wss://{host}{websocket.url.path}"
+        if websocket.url.query:
+            request_url = f"{request_url}?{websocket.url.query}"
+        from twilio.request_validator import RequestValidator
+
+        return RequestValidator(auth_token).validate(request_url, {}, signature)
+    except Exception:
+        # An unverifiable signature must never admit a media stream.
+        return False
 
 
 def call_is_authorized(request: Request) -> bool:
@@ -1312,7 +1396,6 @@ async def make_call(request: Request):
     )
 
     if not account_sid or not auth_token or not from_number:
-
         return JSONResponse(
             {
                 "error":
@@ -1321,9 +1404,45 @@ async def make_call(request: Request):
             status_code=500
         )
 
+    idempotency_identity = None
+    idempotency_key = request.headers.get("idempotency-key")
+    if idempotency_key is not None:
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idempotency_key):
+            return JSONResponse({"error": "Idempotency-Key is invalid."}, status_code=400)
+        identity_secret = os.getenv("CALL_SECRET", "").encode("utf-8")
+        idempotency_identity = hmac.new(
+            identity_secret, idempotency_key.encode("ascii"), hashlib.sha256
+        ).hexdigest()
+        request_fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            .encode("utf-8")
+        ).hexdigest()
+        idempotency_state, replay = make_call_idempotency.begin(
+            idempotency_identity, request_fingerprint
+        )
+        if idempotency_state == "conflict":
+            return JSONResponse(
+                {"error": "Idempotency-Key was already used for a different request."},
+                status_code=409,
+            )
+        if idempotency_state == "pending":
+            return JSONResponse(
+                {"error": "A request with this Idempotency-Key is in progress."},
+                status_code=409,
+            )
+        if idempotency_state == "replay":
+            status_code, response_body = replay
+            return JSONResponse(response_body, status_code=status_code)
+        if idempotency_state == "full":
+            return JSONResponse(
+                {"error": "Call idempotency capacity is unavailable."}, status_code=503
+            )
+
     try:
         record = call_manager.reserve(safety_config, language, mission)
     except CallAdmissionError as exc:
+        if idempotency_identity:
+            make_call_idempotency.discard(idempotency_identity)
         messages = {
             "concurrent_limit": "The concurrent call limit has been reached.",
             "hourly_limit": "The hourly call limit has been reached.",
@@ -1333,6 +1452,8 @@ async def make_call(request: Request):
 
     availability = evaluate_call_availability()
     if not availability.allowed:
+        if idempotency_identity:
+            make_call_idempotency.discard(idempotency_identity)
         availability_data = availability.to_dict()
         call_manager.release(reservation_id=record.reservation_id)
         blocked_result = empty_call_result(
@@ -1355,6 +1476,8 @@ async def make_call(request: Request):
         r"(?=.{1,253}\Z)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
         configured_domain,
     ):
+        if idempotency_identity:
+            make_call_idempotency.discard(idempotency_identity)
         call_manager.release(reservation_id=record.reservation_id)
         return JSONResponse(
             {"error": "Public call URL configuration is invalid or unavailable."}, status_code=503
@@ -1363,6 +1486,8 @@ async def make_call(request: Request):
     try:
         host = public_host(request)
     except ValueError:
+        if idempotency_identity:
+            make_call_idempotency.discard(idempotency_identity)
         call_manager.release(reservation_id=record.reservation_id)
         return JSONResponse(
             {"error": "Public call URL configuration is invalid."}, status_code=503
@@ -1370,6 +1495,8 @@ async def make_call(request: Request):
 
     readiness_check = await check_provider_readiness()
     if readiness_check:
+        if idempotency_identity:
+            make_call_idempotency.discard(idempotency_identity)
         call_manager.release(reservation_id=record.reservation_id)
         return readiness_response(readiness_check)
 
@@ -1400,10 +1527,10 @@ async def make_call(request: Request):
         await write_call_result(
             empty_call_result("error", language, record.started_at, mission=mission)
         )
-        return JSONResponse(
-            {"error": "The request to Twilio timed out."},
-            status_code=504,
-        )
+        response_body = {"error": "The request to Twilio timed out."}
+        if idempotency_identity:
+            make_call_idempotency.complete(idempotency_identity, 504, response_body)
+        return JSONResponse(response_body, status_code=504)
     except TwilioRestException as exc:
         check = twilio_rest_error(
             getattr(exc, "code", None), getattr(exc, "status", None)
@@ -1414,24 +1541,26 @@ async def make_call(request: Request):
             empty_call_result("rejected", language, record.started_at, mission=mission),
             reservation_id=record.reservation_id,
         )
+        if idempotency_identity:
+            make_call_idempotency.discard(idempotency_identity)
         return JSONResponse({"error": "Twilio rejected the call request."}, status_code=502)
     except RequestException:
         dependency_health.record(transport_error("twilio", "network_error"))
         await write_call_result(
             empty_call_result("error", language, record.started_at, mission=mission)
         )
-        return JSONResponse(
-            {"error": "Could not communicate with Twilio."},
-            status_code=502,
-        )
+        response_body = {"error": "Could not communicate with Twilio."}
+        if idempotency_identity:
+            make_call_idempotency.complete(idempotency_identity, 502, response_body)
+        return JSONResponse(response_body, status_code=502)
     except Exception:
         await write_call_result(
             empty_call_result("error", language, record.started_at, mission=mission)
         )
-        return JSONResponse(
-            {"error": "Could not create the call."},
-            status_code=502,
-        )
+        response_body = {"error": "Could not create the call."}
+        if idempotency_identity:
+            make_call_idempotency.complete(idempotency_identity, 502, response_body)
+        return JSONResponse(response_body, status_code=502)
 
     call_sid = getattr(call, "sid", None)
     if not isinstance(call_sid, str) or not call_sid:
@@ -1440,7 +1569,10 @@ async def make_call(request: Request):
             empty_call_result("error", language, record.started_at, mission=mission),
             reservation_id=record.reservation_id,
         )
-        return JSONResponse({"error": "Could not create the call."}, status_code=502)
+        response_body = {"error": "Could not create the call."}
+        if idempotency_identity:
+            make_call_idempotency.complete(idempotency_identity, 502, response_body)
+        return JSONResponse(response_body, status_code=502)
     call_manager.bind_call_sid(record.reservation_id, call_sid)
     if record.terminal_status:
         call_manager.release(reservation_id=record.reservation_id)
@@ -1456,14 +1588,15 @@ async def make_call(request: Request):
 
     print(f"Outbound call request accepted | LANGUAGE={language}")
 
-    return JSONResponse(
-        {
-            "status": "call_created",
-            "language": language,
-            "language_name": LANGUAGES[language],
-            "mission": mission.id,
-        }
-    )
+    response_body = {
+        "status": "call_created",
+        "language": language,
+        "language_name": LANGUAGES[language],
+        "mission": mission.id,
+    }
+    if idempotency_identity:
+        make_call_idempotency.complete(idempotency_identity, 200, response_body)
+    return JSONResponse(response_body)
 
 
 @app.post("/call-status")
@@ -1599,21 +1732,26 @@ async def handle_media_stream(
     path_language: str
 ):
 
+    stream_config = safety_config_or_none()
+    if not stream_config or not stream_config.enabled:
+        print("Call stream rejected by a safety control.")
+        await websocket.close(code=1008)
+        return
+
+    if not valid_twilio_media_signature(websocket):
+        print("Call stream rejected because Twilio signature validation failed.")
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     call_started_at = asyncio.get_running_loop().time()
     call_started_datetime = datetime.now(timezone.utc)
     call_sid = None
     reservation_id = None
     mission = None
-    stream_config = safety_config_or_none()
     openai_ws_for_report = None
     finalized = False
     transcript = CallTranscript()
-
-    if not stream_config or not stream_config.enabled:
-        print("Call stream rejected by a safety control.")
-        await finish_call(None, None, websocket, complete_twilio=False)
-        return
 
     # ========================================================
     # LANGUAGE FROM URL PATH
