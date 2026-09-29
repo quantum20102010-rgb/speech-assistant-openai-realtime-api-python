@@ -86,7 +86,19 @@ Once ngrok is running, dependencies are installed, Twilio is configured properly
 python main.py
 ```
 ## Test the app
-With the development server running, call the phone number you purchased in the **Prerequisites**. After the introduction, you should be able to talk to the AI Assistant. Have fun!
+Starting the development server does not enable calls. Keep `CALLS_ENABLED=false` for normal development and automated tests. Do not test by calling the Twilio number while calls are disabled; the media stream will be rejected by the safety control.
+
+### Safe calling defaults and controlled validation
+
+The safe default is `CALLS_ENABLED=false` in `.env.example`. Leave it disabled for normal tests. Do not enable calling until you have explicitly completed a controlled configuration and readiness review.
+
+When calls are intentionally enabled, the application requires a valid `CALL_SECRET`, `OPENAI_API_KEY`, Twilio account credentials and phone number, and `RAILWAY_PUBLIC_DOMAIN`. `/make-call` is an authenticated endpoint; authenticate with the configured `CALL_SECRET` using the supported `X-Call-Secret` or bearer authorization header. Include an `Idempotency-Key` for every controlled real request so an identical retry does not create a second call. The header is optional in the API for legacy compatibility, and requests without it are not deduplicated.
+
+Twilio must connect to `/media-stream` with a valid `X-Twilio-Signature`; the server rejects a missing or invalid signature before accepting the WebSocket. Calls are also subject to the configured concurrency, hourly, and daily limits. The default commercial window is `America/Mexico_City`, Monday through Friday, 09:00–17:00.
+
+Email remains disabled and in dry-run by default (`EMAIL_ENABLED=false`, `EMAIL_DRY_RUN=true`). WhatsApp remains disabled by default (`WHATSAPP_ENABLED=false`) and its executor is dry-run only. Keep these settings unchanged during normal testing.
+
+The first real call must happen only after an explicit, controlled validation of configuration, authentication, provider readiness, destination, limits, and commercial hours. Do not use a normal development test as a real-call validation.
 
 ## Special features
 

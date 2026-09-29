@@ -1757,10 +1757,10 @@ async def handle_media_stream(
     # LANGUAGE FROM URL PATH
     # ========================================================
 
-    language = path_language.lower().strip()
-
-    if language not in LANGUAGES:
-        language = "spanish"
+    requested_language = path_language.lower().strip()
+    language = (
+        requested_language if requested_language in LANGUAGES else "spanish"
+    )
 
     print(
         "=================================================="

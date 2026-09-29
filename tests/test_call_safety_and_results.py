@@ -408,6 +408,74 @@ class CallResultTests(unittest.IsolatedAsyncioTestCase):
         readiness.assert_not_awaited()
         realtime_connect.assert_not_called()
 
+    async def test_media_websocket_preserves_valid_path_language_through_openai_session(self):
+        os.environ["CALLS_ENABLED"] = "true"
+        os.environ["RAILWAY_PUBLIC_DOMAIN"] = "test-domain.up.railway.app"
+
+        for language, language_name in main.LANGUAGES.items():
+            with self.subTest(language=language):
+                main.call_manager = InMemoryCallManager()
+                public_url = (
+                    f"wss://test-domain.up.railway.app/media-stream/{language}"
+                )
+                signature = RequestValidator(
+                    os.environ["TWILIO_AUTH_TOKEN"]
+                ).compute_signature(public_url, {})
+                websocket = AsyncMock()
+                websocket.headers = {"x-twilio-signature": signature}
+                websocket.url = type(
+                    "URL", (), {"path": f"/media-stream/{language}", "query": ""}
+                )()
+                websocket.receive_text.return_value = json.dumps({
+                    "event": "start",
+                    "start": {
+                        "streamSid": f"MZ_{language}",
+                        "callSid": f"CA_{language}",
+                        "customParameters": {"mission": "market_research"},
+                    },
+                })
+
+                openai_ws = AsyncMock()
+                openai_context = AsyncMock()
+                openai_context.__aenter__.return_value = openai_ws
+                openai_context.__aexit__.return_value = False
+
+                def close_task_coroutine(coroutine):
+                    coroutine.close()
+                    return object()
+
+                with patch.object(
+                    main.call_manager,
+                    "admit_media_stream",
+                    wraps=main.call_manager.admit_media_stream,
+                ) as admit, patch(
+                    "main.check_openai_readiness",
+                    new_callable=AsyncMock,
+                    return_value=type(
+                        "Readiness", (), {"status": main.DependencyStatus.AVAILABLE}
+                    )(),
+                ), patch(
+                    "main.websockets.connect", return_value=openai_context
+                ), patch(
+                    "main.asyncio.create_task", side_effect=close_task_coroutine
+                ), patch(
+                    "main.wait_for_call_end",
+                    new_callable=AsyncMock,
+                    return_value="twilio_stopped",
+                ), patch(
+                    "main.finalize_call", new_callable=AsyncMock
+                ):
+                    await main.handle_media_stream(websocket, language)
+
+                self.assertEqual(admit.call_args.args[2], language)
+                session_update = json.loads(
+                    openai_ws.send.await_args_list[0].args[0]
+                )
+                self.assertIn(
+                    f"You MUST speak in {language_name}.",
+                    session_update["session"]["instructions"],
+                )
+
     async def test_media_websocket_missing_or_invalid_signature_rejects_before_admission(self):
         os.environ["CALLS_ENABLED"] = "true"
         os.environ["RAILWAY_PUBLIC_DOMAIN"] = "test-domain.up.railway.app"
