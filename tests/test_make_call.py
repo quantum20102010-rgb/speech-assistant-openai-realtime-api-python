@@ -32,6 +32,12 @@ TEST_SECRET = "local-test-placeholder"
 TEST_NUMBER = "+12125550100"
 
 
+class HealthEndpointTests(unittest.TestCase):
+    def test_health_returns_ok(self):
+        response = asyncio.run(main.health())
+        self.assertEqual(response, {"status": "ok"})
+
+
 def make_request(payload=None, headers=()):
     body = json.dumps(payload).encode("utf-8") if payload is not None else b""
 

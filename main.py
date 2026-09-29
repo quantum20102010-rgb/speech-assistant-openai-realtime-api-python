@@ -942,6 +942,11 @@ async def index_page():
     }
 
 
+@app.get("/health", response_class=JSONResponse)
+async def health():
+    return {"status": "ok"}
+
+
 @app.get("/health/dependencies")
 async def dependency_status(request: Request):
     if not call_is_authorized(request):
