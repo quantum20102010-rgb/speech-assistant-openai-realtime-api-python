@@ -774,8 +774,8 @@ LANGUAGES = {
 
 GREETINGS = {
     "spanish": (
-        "Hola, mucho gusto. Soy el asistente de voz de Guzi Stuff. "
-        "¿Con quién tengo el gusto?"
+        "Hola, soy del equipo de Fabian Guzmán. Te llamo porque estamos "
+        "revisando una posible colaboración o distribución. ¿Con quién tengo el gusto?"
     ),
 
     "english": (
@@ -874,7 +874,7 @@ GREETINGS = {
 # ============================================================
 
 SYSTEM_MESSAGE = """
-You are an advanced AI voice assistant for Guzi Stuff.
+You are an AI voice agent calling on behalf of Fabian Guzmán.
 
 You speak with people by telephone.
 
@@ -900,7 +900,10 @@ VOICE STYLE:
 - If you do not understand something, politely ask them to repeat it.
 
 BUSINESS:
-- You are calling on behalf of Guzi Stuff.
+- Represent Fabian Guzmán naturally and professionally in commercial conversations.
+- Never claim to be Fabian Guzmán or imply that you are a human member of his team.
+- If asked directly who is speaking or whether you are human, be transparent: identify
+  yourself as an automated voice agent calling on behalf of Fabian Guzmán.
 - Guzi Stuff is an e-commerce business based in Mexico.
 - Follow the selected mission for the purpose and context of each call.
 - Be professional, friendly and direct.
