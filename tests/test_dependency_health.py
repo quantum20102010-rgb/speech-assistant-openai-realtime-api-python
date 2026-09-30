@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 from requests.exceptions import Timeout as RequestTimeout
 
 from dependency_health import (
+    DependencyCheck,
     DependencyHealthRegistry,
     DependencyStatus,
     openai_error,
@@ -37,11 +38,112 @@ class DependencyHealthTests(unittest.TestCase):
     def test_twilio_zero_balance_blocks_and_does_not_retain_payload(self):
         getter = Mock(side_effect=[
             Response(payload={"status": "active"}),
-            Response(payload={"balance": "0.00"}),
+            Response(payload={"balance": "0.00", "currency": "USD"}),
         ])
         check = twilio_preflight("local-account-sid", "local-token", http_get=getter)
         self.assertEqual(check.status, DependencyStatus.QUOTA_OR_BALANCE_EXHAUSTED)
-        self.assertEqual(check.reason, "non_positive_balance")
+        self.assertEqual(check.reason, "twilio_balance_below_minimum")
+
+    def test_twilio_minimum_balance_blocks_below_threshold_and_allows_equal(self):
+        below_getter = Mock(side_effect=[
+            Response(payload={"status": "active"}),
+            Response(payload={"balance": "4.99", "currency": "USD"}),
+        ])
+        below = twilio_preflight(
+            "test-sid", "local-token", http_get=below_getter,
+            minimum_balance="5.00",
+        )
+        self.assertEqual(
+            below.reason, "twilio_balance_below_minimum"
+        )
+        self.assertEqual(below.status, DependencyStatus.QUOTA_OR_BALANCE_EXHAUSTED)
+
+        equal_getter = Mock(side_effect=[
+            Response(payload={"status": "active"}),
+            Response(payload={"balance": "5.00", "currency": "USD"}),
+        ])
+        equal = twilio_preflight(
+            "test-sid", "local-token", http_get=equal_getter,
+            minimum_balance="5.00",
+        )
+        self.assertEqual(equal.status, DependencyStatus.AVAILABLE)
+
+    def test_twilio_unknown_balance_and_invalid_minimum_fail_closed(self):
+        for balance_data in (
+            {"balance": "not-a-number", "currency": "USD"},
+            {"balance": "12.00", "currency": "EUR"},
+            {"balance": "12.00"},
+        ):
+            getter = Mock(side_effect=[
+                Response(payload={"status": "active"}),
+                Response(payload=balance_data),
+            ])
+            check = twilio_preflight(
+                "test-sid", "local-token", http_get=getter,
+                minimum_balance="5.00",
+            )
+            self.assertEqual(check.status, DependencyStatus.UNKNOWN)
+            self.assertEqual(check.reason, "twilio_balance_unknown")
+
+        getter = Mock()
+        for invalid_minimum in ("not-a-number", "-0.01", "NaN", "Infinity"):
+            check = twilio_preflight(
+                "test-sid", "local-token", http_get=getter,
+                minimum_balance=invalid_minimum,
+            )
+            self.assertEqual(check.status, DependencyStatus.UNKNOWN)
+            self.assertEqual(check.reason, "twilio_minimum_balance_invalid")
+        getter.assert_not_called()
+
+    def test_invalid_configured_minimum_blocks_readiness_before_provider_checks(self):
+        environment = {
+            "CALLS_ENABLED": "true",
+            "CALL_SECRET": "local-call-secret",
+            "OPENAI_API_KEY": "local-openai-key",
+            "TWILIO_ACCOUNT_SID": "AC" + "a" * 32,
+            "TWILIO_AUTH_TOKEN": "local-twilio-token",
+            "TWILIO_PHONE_NUMBER": "+12125550199",
+            "TWILIO_MIN_BALANCE_USD": "-1.00",
+        }
+        with patch.dict(os.environ, environment):
+            with patch("main.twilio_preflight") as twilio_check, \
+                    patch("main.openai_preflight") as openai_check:
+                check = main.asyncio.run(main.check_provider_readiness())
+
+        self.assertEqual(check.reason, "twilio_minimum_balance_invalid")
+        self.assertEqual(check.status, DependencyStatus.UNKNOWN)
+        twilio_check.assert_not_called()
+        openai_check.assert_not_called()
+
+    def test_configured_minimum_is_passed_to_existing_twilio_preflight(self):
+        environment = {
+            "CALLS_ENABLED": "true",
+            "CALL_SECRET": "local-call-secret",
+            "OPENAI_API_KEY": "local-openai-key",
+            "TWILIO_ACCOUNT_SID": "AC" + "a" * 32,
+            "TWILIO_AUTH_TOKEN": "local-twilio-token",
+            "TWILIO_PHONE_NUMBER": "+12125550199",
+            "TWILIO_MIN_BALANCE_USD": "7.25",
+        }
+        with patch.dict(os.environ, environment):
+            with patch(
+                "main.twilio_preflight",
+                return_value=DependencyCheck(
+                    "twilio", DependencyStatus.AVAILABLE,
+                    "account_active_balance_positive", "Ready.",
+                ),
+            ) as twilio_check, patch(
+                "main.openai_preflight",
+                return_value=DependencyCheck(
+                    "openai", DependencyStatus.AVAILABLE, "model_available", "Ready."
+                ),
+            ):
+                check = main.asyncio.run(main.check_provider_readiness())
+
+        self.assertIsNone(check)
+        self.assertEqual(
+            str(twilio_check.call_args.kwargs["minimum_balance"]), "7.25"
+        )
 
     def test_twilio_inactive_account_and_http_auth_are_classified(self):
         inactive = twilio_preflight(

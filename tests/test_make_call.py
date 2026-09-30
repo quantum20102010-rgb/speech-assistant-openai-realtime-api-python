@@ -97,7 +97,7 @@ class MakeCallTests(unittest.IsolatedAsyncioTestCase):
                 "MAX_CALLS_PER_HOUR", "MAX_CALLS_PER_DAY",
                 "MAX_CALL_DURATION_SECONDS", "ALLOWED_DESTINATION_COUNTRIES",
                 "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER",
-                "RAILWAY_PUBLIC_DOMAIN", "OPENAI_API_KEY",
+                "TWILIO_MIN_BALANCE_USD", "RAILWAY_PUBLIC_DOMAIN", "OPENAI_API_KEY",
             )
         }
         os.environ["CALL_SECRET"] = TEST_SECRET
@@ -110,6 +110,7 @@ class MakeCallTests(unittest.IsolatedAsyncioTestCase):
         os.environ["TWILIO_ACCOUNT_SID"] = "AC" + ("a" * 32)
         os.environ["TWILIO_AUTH_TOKEN"] = "a" * 32
         os.environ["TWILIO_PHONE_NUMBER"] = "+12125550199"
+        os.environ["TWILIO_MIN_BALANCE_USD"] = "5.00"
         os.environ["OPENAI_API_KEY"] = "local-test-openai-key"
         os.environ["RAILWAY_PUBLIC_DOMAIN"] = "test-domain.up.railway.app"
         self.readiness_mock = AsyncMock(return_value=None)
@@ -363,6 +364,52 @@ class MakeCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["dependency_status"], "quota_or_balance_exhausted")
         self.assertNotIn(TEST_NUMBER, response.body.decode())
         twilio_client.assert_not_called()
+
+    async def test_twilio_balance_failure_returns_safe_reason_code_and_blocks_call(self):
+        from dependency_health import DependencyCheck, DependencyStatus
+
+        for check, reason_code, expected_error in (
+            (
+                DependencyCheck(
+                    "twilio", DependencyStatus.QUOTA_OR_BALANCE_EXHAUSTED,
+                    "twilio_balance_below_minimum", "Review balance.", latch=True,
+                ),
+                "twilio_balance_below_minimum",
+                "Twilio balance is below the configured minimum; the call was blocked.",
+            ),
+            (
+                DependencyCheck(
+                    "twilio", DependencyStatus.UNKNOWN,
+                    "twilio_balance_unknown", "Review balance.", latch=True,
+                ),
+                "twilio_balance_unknown",
+                "Twilio balance could not be verified safely; the call was blocked.",
+            ),
+            (
+                DependencyCheck(
+                    "twilio", DependencyStatus.QUOTA_OR_BALANCE_EXHAUSTED,
+                    "non_positive_balance", "Review balance.", latch=True,
+                ),
+                "twilio_balance_non_positive",
+                "Twilio balance is not positive; the call was blocked.",
+            ),
+        ):
+            self.readiness_mock.return_value = check
+            request = make_request(
+                {"to": TEST_NUMBER},
+                headers=[(b"x-call-secret", TEST_SECRET.encode())],
+            )
+            with patch("twilio.rest.Client") as twilio_client:
+                response = await main.make_call(request)
+
+            body = json.loads(response.body)
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(body["reason_code"], reason_code)
+            self.assertEqual(body["error"], expected_error)
+            self.assertNotIn(os.environ["TWILIO_AUTH_TOKEN"], response.body.decode())
+            self.assertNotIn(os.environ["OPENAI_API_KEY"], response.body.decode())
+            self.assertEqual(main.call_manager.active_count, 0)
+            twilio_client.assert_not_called()
 
     async def test_outside_operating_window_is_recorded_before_provider_checks(self):
         self.availability_patcher.stop()

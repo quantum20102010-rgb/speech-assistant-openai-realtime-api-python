@@ -65,6 +65,7 @@ from dependency_health import (
     DependencyStatus,
     openai_error,
     openai_preflight,
+    parse_twilio_minimum_balance,
     transport_error,
     twilio_preflight,
     twilio_rest_error,
@@ -237,10 +238,22 @@ async def check_provider_readiness():
     missing = configured_dependency_status()
     if missing:
         return missing
+    minimum_balance = parse_twilio_minimum_balance(
+        os.getenv("TWILIO_MIN_BALANCE_USD", "5.00")
+    )
+    if minimum_balance is None:
+        check = DependencyCheck(
+            "twilio", DependencyStatus.UNKNOWN, "twilio_minimum_balance_invalid",
+            "Corrige TWILIO_MIN_BALANCE_USD; las llamadas permanecen bloqueadas.",
+            latch=True,
+        )
+        dependency_health.record(check)
+        return check
     twilio_check, openai_check = await asyncio.gather(
         run_in_threadpool(
             twilio_preflight, os.getenv("TWILIO_ACCOUNT_SID"),
             os.getenv("TWILIO_AUTH_TOKEN"), TWILIO_HTTP_TIMEOUT,
+            minimum_balance=minimum_balance,
         ),
         run_in_threadpool(
             openai_preflight, os.getenv("OPENAI_API_KEY"), TWILIO_HTTP_TIMEOUT,
@@ -273,6 +286,24 @@ async def check_openai_readiness():
 def readiness_response(check):
     statuses = dependency_health.snapshot()["dependencies"]
     safe_status = check.status.value
+    if check.service == "twilio":
+        if check.reason == "twilio_balance_below_minimum":
+            reason_code = "twilio_balance_below_minimum"
+            error = "Twilio balance is below the configured minimum; the call was blocked."
+        elif check.reason == "twilio_minimum_balance_invalid":
+            reason_code = "twilio_minimum_balance_invalid"
+            error = "Twilio minimum balance configuration is invalid; the call was blocked."
+        elif check.reason == "non_positive_balance":
+            reason_code = "twilio_balance_non_positive"
+            error = "Twilio balance is not positive; the call was blocked."
+        else:
+            reason_code = "twilio_balance_unknown"
+            error = "Twilio balance could not be verified safely; the call was blocked."
+        return JSONResponse(
+            {"error": error, "reason_code": reason_code,
+             "dependency_status": safe_status, "dependencies": statuses},
+            status_code=503,
+        )
     return JSONResponse(
         {"error": "Provider readiness check blocked the operation.",
          "dependency_status": safe_status, "dependencies": statuses},
@@ -774,8 +805,9 @@ LANGUAGES = {
 
 GREETINGS = {
     "spanish": (
-        "Hola, soy del equipo de Fabian Guzmán. Te llamo porque estamos "
-        "revisando una posible colaboración o distribución. ¿Con quién tengo el gusto?"
+        "Hola, soy Carlos Contreras, del equipo de Fabian Guzmán. Te llamo "
+        "porque estamos revisando una posible colaboración o distribución. "
+        "¿Con quién tengo el gusto?"
     ),
 
     "english": (
@@ -893,18 +925,31 @@ VOICE STYLE:
 - Use natural pauses.
 - Ask one question at a time.
 - Do not give long speeches.
-- Do not repeat information unnecessarily.
+- Prioritize listening, understanding, and moving the conversation forward.
+- When the caller gives clear, sufficient information, do not repeat or paraphrase it;
+  continue naturally with the next relevant question or point from the selected mission.
+- Adapt each question to what the caller has already said, and do not ask again for
+  information that is already clear.
+- If information is ambiguous, incomplete, or contradictory, ask one brief, specific
+  question for the missing or conflicting detail.
+- If you did not understand, ask briefly and naturally for clarification without repeating
+  the caller's full statement.
+- Do not turn every answer into a confirmation. Avoid openings such as "I understand, so
+  you're saying..." and do not echo prices, quantities, terms, names, or explanations
+  unless confirming a critical detail is necessary to proceed accurately.
 - Do not read a script mechanically.
 - Adapt your responses to what the caller actually says.
 - Let the caller finish speaking.
-- If you do not understand something, politely ask them to repeat it.
 
 BUSINESS:
 - Represent Fabian Guzmán naturally and professionally in commercial conversations.
-- Never claim to be Fabian Guzmán or imply that you are a human member of his team.
+- In Spanish calls, introduce yourself as Carlos Contreras, calling from Fabian Guzmán's team.
+- Do not claim to be Fabian Guzmán or claim to be human. The Carlos Contreras name is your
+  representative name for Spanish calls; do not describe yourself as a human team member.
 - If asked directly who is speaking or whether you are human, be transparent: identify
   yourself as an automated voice agent calling on behalf of Fabian Guzmán.
 - Guzi Stuff is an e-commerce business based in Mexico.
+- Fabian Guzmán is in charge of Guzi Stuff's official stores on Mercado Libre and Amazon.
 - Follow the selected mission for the purpose and context of each call.
 - Be professional, friendly and direct.
 - Never invent prices, agreements, certifications, purchase volumes,

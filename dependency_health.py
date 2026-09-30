@@ -9,6 +9,17 @@ from decimal import Decimal, InvalidOperation
 import requests
 
 
+def parse_twilio_minimum_balance(value):
+    """Return a valid non-negative USD minimum, or None for invalid configuration."""
+    try:
+        minimum = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not minimum.is_finite() or minimum < 0:
+        return None
+    return minimum
+
+
 class DependencyStatus(str, Enum):
     AVAILABLE = "available"
     DISABLED = "disabled"
@@ -230,8 +241,17 @@ def transport_error(service, reason):
     return DependencyCheck(service, DependencyStatus.SERVICE_ERROR, reason, action)
 
 
-def twilio_preflight(account_sid, auth_token, timeout=5, http_get=None):
+def twilio_preflight(
+    account_sid, auth_token, timeout=5, http_get=None, minimum_balance=Decimal("5.00")
+):
     """Read documented Twilio account and balance resources; never create calls."""
+    minimum_balance = parse_twilio_minimum_balance(minimum_balance)
+    if minimum_balance is None:
+        return DependencyCheck(
+            "twilio", DependencyStatus.UNKNOWN, "twilio_minimum_balance_invalid",
+            "Corrige TWILIO_MIN_BALANCE_USD; las llamadas permanecen bloqueadas.",
+            latch=True,
+        )
     if not account_sid or not auth_token:
         return DependencyCheck(
             "twilio", DependencyStatus.NOT_CONFIGURED, "credentials_missing",
@@ -259,17 +279,30 @@ def twilio_preflight(account_sid, auth_token, timeout=5, http_get=None):
         if balance_response.status_code >= 400:
             return twilio_rest_error(status_code=balance_response.status_code)
         balance_data = balance_response.json()
+        if balance_data.get("currency") != "USD":
+            return DependencyCheck(
+                "twilio", DependencyStatus.UNKNOWN, "twilio_balance_unknown",
+                "No se pudo confirmar el saldo de Twilio en USD; las llamadas permanecen bloqueadas.",
+                latch=True,
+            )
         try:
             balance = Decimal(str(balance_data.get("balance", "")))
         except (InvalidOperation, TypeError):
             return DependencyCheck(
-                "twilio", DependencyStatus.UNKNOWN, "balance_response_unavailable",
+                "twilio", DependencyStatus.UNKNOWN, "twilio_balance_unknown",
                 "Revisa manualmente el saldo y el estado de la cuenta Twilio.", latch=True,
             )
         if not balance.is_finite():
             return DependencyCheck(
-                "twilio", DependencyStatus.UNKNOWN, "balance_response_unavailable",
+                "twilio", DependencyStatus.UNKNOWN, "twilio_balance_unknown",
                 "Revisa manualmente el saldo y el estado de la cuenta Twilio.", latch=True,
+            )
+        if balance < minimum_balance:
+            return DependencyCheck(
+                "twilio", DependencyStatus.QUOTA_OR_BALANCE_EXHAUSTED,
+                "twilio_balance_below_minimum",
+                "El saldo de Twilio está por debajo del mínimo configurado; recarga saldo antes de permitir llamadas.",
+                latch=True,
             )
         if balance <= 0:
             return DependencyCheck(
